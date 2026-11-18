@@ -38,6 +38,8 @@ const browser = await puppeteer.launch({
   defaultViewport: { width: 1440, height: 1000 },
 });
 const page = await browser.newPage();
+// UI_CPU_THROTTLE=4 simula una máquina 4 veces más lenta (útil para reproducir problemas de tiempos de CI).
+if (process.env.UI_CPU_THROTTLE) await page.emulateCPUThrottling(Number(process.env.UI_CPU_THROTTLE));
 const pageErrors = [];
 page.on("pageerror", (e) => pageErrors.push(e.message));
 // El navegador registra en consola el 401 del login fallido que la prueba provoca a propósito;
@@ -49,6 +51,9 @@ page.on("console", (m) => {
     expectedUnauthorized -= 1;
     return;
   }
+  // Aviso del navegador (no de la app): sobre HTTP sin TLS fuera de localhost, Chrome ignora la cabecera
+  // Cross-Origin-Opener-Policy. Con HTTPS (Coolify + Traefik) o en localhost sí se aplica.
+  if (/Cross-Origin-Opener-Policy header has been ignored/.test(m.text())) return;
   pageErrors.push(m.text());
 });
 
@@ -210,18 +215,52 @@ try {
   await createOrder("Clínica San Rafael", [["Guantes de nitrilo (caja)", 30, 6.2]]);
 
   // ------------------------------------------------------------------ cambio de estado
-  await clickInRow("Supermercado La Economía", "→ En proceso");
-  await page.waitForFunction(() => true, { timeout: 100 });
-  await sleep(700);
-  check("Avanzar estado: pendiente → en proceso", (await rowStatus("Supermercado La Economía")) === "En proceso");
-  await clickInRow("Logística Express S.A.S.", "→ En proceso");
-  await sleep(700);
-  await clickInRow("Logística Express S.A.S.", "→ Enviado");
-  await sleep(700);
-  check("Avanzar estado: en proceso → enviado", (await rowStatus("Logística Express S.A.S.")) === "Enviado");
-  await clickInRow("María Fernanda López", "→ Entregado");
-  await sleep(700);
-  check("Avanzar estado: enviado → entregado (fin del ciclo)", (await rowStatus("María Fernanda López")) === "Entregado");
+  // Se espera al estado esperado (con límite) en lugar de pausas fijas: en CI la red es más lenta.
+  const advanceTo = async (customer, button, expected) => {
+    await page.waitForFunction(
+      (c, b) => [...document.querySelectorAll("tbody tr")].some((r) =>
+        r.querySelector(".customer")?.textContent === c &&
+        [...r.querySelectorAll("button")].some((x) => x.textContent.includes(b) && !x.disabled)),
+      { timeout: 10000 }, customer, button,
+    );
+    await clickInRow(customer, button);
+    await page
+      .waitForFunction(
+        (c, e) => [...document.querySelectorAll("tbody tr")].find((r) => r.querySelector(".customer")?.textContent === c)
+          ?.querySelector(".status")?.textContent === e,
+        { timeout: 10000 }, customer, expected,
+      )
+      .catch(() => {});
+    return (await rowStatus(customer)) === expected;
+  };
+  check("Avanzar estado: pendiente → en proceso", await advanceTo("Supermercado La Economía", "→ En proceso", "En proceso"));
+  await advanceTo("Logística Express S.A.S.", "→ En proceso", "En proceso");
+  check("Avanzar estado: en proceso → enviado", await advanceTo("Logística Express S.A.S.", "→ Enviado", "Enviado"));
+  check("Avanzar estado: enviado → entregado (fin del ciclo)", await advanceTo("María Fernanda López", "→ Entregado", "Entregado"));
+
+  // Regresión: una recarga de la lista que leyó la BD ANTES de un cambio y responde DESPUÉS no debe
+  // devolver el pedido a su estado anterior (defecto encontrado en CI). Se retrasa a propósito la
+  // respuesta del GET de la lista con el protocolo de depuración de Chrome.
+  const cdp = await page.createCDPSession();
+  await cdp.send("Fetch.enable", { patterns: [{ urlPattern: "*/api/orders*", requestStage: "Response" }] });
+  cdp.on("Fetch.requestPaused", async (event) => {
+    if (event.request.method === "GET" && /\/api\/orders(\?|$)/.test(event.request.url)) await sleep(1500);
+    await cdp.send("Fetch.continueResponse", { requestId: event.requestId }).catch(() => {});
+  });
+  await createOrder("Pedido con recarga lenta", [["Cinta", 2, 3]]);
+  await clickInRow("Pedido con recarga lenta", "→ En proceso"); // la recarga silenciosa sigue en vuelo
+  await sleep(2500);
+  check(
+    "Una recarga lenta de la lista no revierte un cambio de estado",
+    (await rowStatus("Pedido con recarga lenta")) === "En proceso",
+    await rowStatus("Pedido con recarga lenta"),
+  );
+  await cdp.send("Fetch.disable");
+  await cdp.detach();
+  await sleep(300);
+  await clickInRow("Pedido con recarga lenta", "Eliminar");
+  await clickInRow("Pedido con recarga lenta", "¿Confirmar?");
+  await page.waitForFunction(() => ![...document.querySelectorAll("tbody .customer")].some((e) => e.textContent === "Pedido con recarga lenta"), { timeout: 8000 });
 
   // ------------------------------------------------------------------ editar
   await clickInRow("Clínica San Rafael", "Editar");

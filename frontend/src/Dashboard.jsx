@@ -32,6 +32,21 @@ export default function Dashboard({ user, onLogout }) {
   const [toasts, setToasts] = useState([]);
   const [pending, setPending] = useState({});
   const toastSeq = useRef(0);
+  // Control de respuestas obsoletas: una recarga de la lista que empezó antes de un cambio local (o que
+  // fue superada por otra más nueva) NO debe sobrescribir el estado. Sin esto, un GET lento que leyó la
+  // BD antes de un PATCH devolvía el pedido a su estado anterior en pantalla.
+  const ordersVersion = useRef(0);
+  const listSeq = useRef(0);
+  const applyList = useCallback((data, seq, versionAtStart) => {
+    if (seq !== listSeq.current || versionAtStart !== ordersVersion.current) return false;
+    setOrders(data.data);
+    setOrdersState({ loading: false, error: null, dbUsed: data.db_used });
+    return true;
+  }, []);
+  const mutateOrders = useCallback((updater) => {
+    ordersVersion.current += 1;
+    setOrders(updater);
+  }, []);
 
   const dismiss = useCallback((id) => setToasts((list) => list.filter((t) => t.id !== id)), []);
   const notify = useCallback(
@@ -66,10 +81,11 @@ export default function Dashboard({ user, onLogout }) {
   }, []);
 
   const loadOrders = useCallback(async ({ silent = false } = {}) => {
+    const seq = ++listSeq.current;
+    const versionAtStart = ordersVersion.current;
     try {
       const { data } = await api.listOrders({ silent });
-      setOrders(data.data);
-      setOrdersState({ loading: false, error: null, dbUsed: data.db_used });
+      applyList(data, seq, versionAtStart);
       return data;
     } catch (error) {
       setOrdersState((s) => ({ ...s, loading: false, error: error.message }));
@@ -95,7 +111,7 @@ export default function Dashboard({ user, onLogout }) {
 
   // Las respuestas de escritura no traen owner_username: se conserva el que ya conocíamos.
   const upsertLocal = (order) =>
-    setOrders((list) => {
+    mutateOrders((list) => {
       const exists = list.some((o) => o.id === order.id);
       return exists
         ? list.map((o) => (o.id === order.id ? { ...o, ...order, owner_username: order.owner_username ?? o.owner_username } : o))
@@ -147,7 +163,7 @@ export default function Dashboard({ user, onLogout }) {
     withPending(`order:${order.id}`, async () => {
       try {
         const { data } = await api.deleteOrder(order.id);
-        setOrders((list) => list.filter((o) => o.id !== order.id));
+        mutateOrders((list) => list.filter((o) => o.id !== order.id));
         if (editing?.id === order.id) setEditing(null);
         notify("success", `Pedido #${shortId(order.id)} eliminado (${where(data)})`);
       } catch (error) {
@@ -215,10 +231,12 @@ export default function Dashboard({ user, onLogout }) {
       const results = [];
       for (let i = 0; i < 6; i += 1) {
         try {
+          // misma protección: si hubo un cambio local mientras tanto, esta lectura ya es vieja
+          const seq = ++listSeq.current;
+          const versionAtStart = ordersVersion.current;
           const { data, meta } = await api.listOrders();
           results.push(meta);
-          setOrders(data.data);
-          setOrdersState({ loading: false, error: null, dbUsed: data.db_used });
+          applyList(data, seq, versionAtStart);
         } catch (error) {
           results.push(error.meta);
         }
