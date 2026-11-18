@@ -1,0 +1,106 @@
+# =============================================================================
+# Sistema Distribuido de Gestión de Pedidos Tolerante a Fallos
+#
+#   navegador ──► gateway (NGINX: React + Round-Robin/failover /api/)
+#                    ├─► backend-node-1 (Nodo-Alpha-01) ─┐
+#                    └─► backend-node-2 (Nodo-Beta-02)  ─┼─► db-primary (PostgreSQL 16)
+#                                                        └─► db-replica (PostgreSQL 16)
+#
+# Local:   docker compose up -d --build   ->  http://localhost:8080
+# Coolify: asignar el dominio al servicio "gateway" (puerto interno 80).
+#          GATEWAY_PORT sólo afecta al puerto publicado en el host.
+#
+# Sin anclas YAML a propósito: el archivo es explícito y Coolify lo procesa sin sorpresas.
+# =============================================================================
+
+services:
+  db-primary:
+    build: ./database
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-secretpassword}
+      POSTGRES_DB: ${POSTGRES_DB:-orders_db}
+    volumes:
+      - pg_primary_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  db-replica:
+    build: ./database
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-secretpassword}
+      POSTGRES_DB: ${POSTGRES_DB:-orders_db}
+    volumes:
+      - pg_replica_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  backend-node-1:
+    build:
+      context: ./backend
+    environment:
+      NODE_ID: Nodo-Alpha-01
+      PEERS: Nodo-Beta-02=http://backend-node-2:8000
+      PRIMARY_DB_URL: postgresql://${POSTGRES_USER:-admin}:${POSTGRES_PASSWORD:-secretpassword}@db-primary:5432/${POSTGRES_DB:-orders_db}
+      REPLICA_DB_URL: postgresql://${POSTGRES_USER:-admin}:${POSTGRES_PASSWORD:-secretpassword}@db-replica:5432/${POSTGRES_DB:-orders_db}
+      SIMULATE_CRASH: ${NODE1_SIMULATE_CRASH:-false}
+      SIMULATE_DB_PRIMARY_DOWN: "false"
+      SYNC_INTERVAL_SECONDS: "5"
+      DB_CONNECT_TIMEOUT: "2"
+      BREAKER_COOLDOWN_SECONDS: "5"
+    depends_on:
+      db-primary:
+        condition: service_healthy
+      db-replica:
+        condition: service_healthy
+    restart: unless-stopped
+
+  backend-node-2:
+    build:
+      context: ./backend
+    environment:
+      NODE_ID: Nodo-Beta-02
+      PEERS: Nodo-Alpha-01=http://backend-node-1:8000
+      PRIMARY_DB_URL: postgresql://${POSTGRES_USER:-admin}:${POSTGRES_PASSWORD:-secretpassword}@db-primary:5432/${POSTGRES_DB:-orders_db}
+      REPLICA_DB_URL: postgresql://${POSTGRES_USER:-admin}:${POSTGRES_PASSWORD:-secretpassword}@db-replica:5432/${POSTGRES_DB:-orders_db}
+      SIMULATE_CRASH: ${NODE2_SIMULATE_CRASH:-false}
+      SIMULATE_DB_PRIMARY_DOWN: "false"
+      SYNC_INTERVAL_SECONDS: "5"
+      DB_CONNECT_TIMEOUT: "2"
+      BREAKER_COOLDOWN_SECONDS: "5"
+    depends_on:
+      db-primary:
+        condition: service_healthy
+      db-replica:
+        condition: service_healthy
+    restart: unless-stopped
+
+  gateway:
+    build:
+      context: .
+      dockerfile: nginx/Dockerfile
+    depends_on:
+      backend-node-1:
+        condition: service_started
+      backend-node-2:
+        condition: service_started
+    ports:
+      - "${GATEWAY_PORT:-8080}:80"
+    expose:
+      - "80"
+    restart: unless-stopped
+
+volumes:
+  pg_primary_data:
+  pg_replica_data:

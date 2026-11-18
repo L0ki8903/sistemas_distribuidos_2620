@@ -1,0 +1,13 @@
+{
+  "name": "pedidos-e2e-ui",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Prueba end-to-end de la interfaz (clics reales con Chrome) y generación de capturas para docs/img",
+  "type": "module",
+  "scripts": {
+    "test": "node ui-test.mjs"
+  },
+  "devDependencies": {
+    "puppeteer-core": "24.43.1"
+  }
+}

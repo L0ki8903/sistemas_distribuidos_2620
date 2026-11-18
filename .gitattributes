@@ -1,0 +1,7 @@
+# Finales de línea LF en el repositorio y en el checkout (los archivos se usan dentro de contenedores Linux).
+* text=auto eol=lf
+
+# Binarios
+*.png binary
+*.jpg binary
+*.ico binary

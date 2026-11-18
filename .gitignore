@@ -1,0 +1,14 @@
+# Secretos / configuración local
+.env
+
+# Frontend
+node_modules/
+frontend/dist/
+
+# Backend
+backend/.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.db
+*.db-journal

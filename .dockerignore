@@ -1,0 +1,6 @@
+# Contexto del build del gateway (raíz del repo): sólo se necesitan frontend/ y nginx/.
+*
+!frontend/
+!nginx/
+frontend/node_modules
+frontend/dist
