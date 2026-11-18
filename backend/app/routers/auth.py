@@ -53,7 +53,7 @@ def register(
         raise PermissionDeniedError("El registro de usuarios está deshabilitado")
     password_hash = hash_password(payload.password, settings.password_hash_iterations)  # fuera de la transacción
     result = cluster.write(
-        lambda session: register_user(session, payload.username, payload.full_name, password_hash),
+        lambda session: register_user(session, payload.username, payload.full_name, password_hash, settings.node_id),
         table=users_table,
     )
     logger.info("AUTH registro de '%s' (%s)", payload.username, result.db_used)

@@ -81,7 +81,7 @@ jobs:
       - name: Instalar dependencias
         run: pip install -r requirements-dev.txt
       - name: pytest contra PostgreSQL
-        run: python -m pytest -v tests/test_orders.py tests/test_auth.py tests/test_monitoring.py
+        run: python -m pytest -v tests/test_orders.py tests/test_auth.py tests/test_monitoring.py tests/test_admin.py
 
   frontend:
     name: Frontend · build (React + Vite)

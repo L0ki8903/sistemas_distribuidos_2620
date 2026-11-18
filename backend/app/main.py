@@ -18,6 +18,8 @@ from .database import DatabaseCluster, DatabaseUnavailableError, describe_error
 from .metrics import EventLogHandler, NodeMetrics
 from .bootstrap import bootstrap_admin
 from .peers import FORWARDED_HEADER, PeerClient
+from .admin import AdminConflictError, SelfModificationError, UserNotFoundError
+from .routers import admin as admin_router
 from .routers import auth as auth_router
 from .routers import chaos as chaos_router
 from .routers import monitoring as monitoring_router
@@ -160,6 +162,18 @@ def create_app(settings: Settings | None = None, peer_client: PeerClient | None 
         response.headers["Retry-After"] = str(exc.retry_after)
         return response
 
+    @app.exception_handler(UserNotFoundError)
+    async def _user_not_found(_: Request, exc: UserNotFoundError):
+        return _error(404, str(exc))
+
+    @app.exception_handler(SelfModificationError)
+    async def _self_modification(_: Request, exc: SelfModificationError):
+        return _error(409, str(exc))
+
+    @app.exception_handler(AdminConflictError)
+    async def _admin_conflict(_: Request, exc: AdminConflictError):
+        return _error(409, str(exc))
+
     @app.exception_handler(UsernameTakenError)
     async def _username_taken(_: Request, exc: UsernameTakenError):
         return _error(409, str(exc))
@@ -199,6 +213,7 @@ def create_app(settings: Settings | None = None, peer_client: PeerClient | None 
     app.include_router(orders_router.router)
     app.include_router(chaos_router.router)
     app.include_router(monitoring_router.router)
+    app.include_router(admin_router.router)
     return app
 
 

@@ -45,8 +45,14 @@ DB_USED_FAILOVER = "replica_failover"
 SCHEMA_LOCK_ID = 724_001  # pg_advisory_xact_lock: los dos nodos no migran a la vez
 
 T = TypeVar("T")
+REPLICATE_KEY = "replicate_extra"
 orders_table: Table = Order.__table__
 users_table: Table = User.__table__
+
+
+def queue_replication(session: Session, table: Table, row: dict[str, Any]) -> None:
+    """Marca una fila extra, escrita en esta transacción, para replicarla junto con la principal."""
+    session.info.setdefault(REPLICATE_KEY, []).append((table, row))
 
 
 class SimulatedPrimaryDownError(Exception):
@@ -261,6 +267,17 @@ class DatabaseCluster:
         with self.session(name) as session, session.begin():
             return fn(session)
 
+    def _write_transaction(self, name: str, fn: Callable[[Session], tuple[dict[str, Any], Any]]):
+        """Como ``_transaction`` pero devuelve también las filas extra a replicar.
+
+        Las reglas de negocio pueden registrar filas adicionales escritas en la MISMA transacción (p. ej.
+        la entrada de auditoría, o los pedidos de un usuario eliminado) con ``queue_replication``.
+        """
+        with self.session(name) as session, session.begin():
+            row, info = fn(session)
+            extra = list(session.info.get(REPLICATE_KEY, []))
+        return row, info, extra
+
     def read(self, fn: Callable[[Session], T]) -> tuple[T, str]:
         """Lee en la primaria; si falla, conmuta a la réplica (``replica_failover``)."""
         self._maybe_resync()
@@ -294,13 +311,13 @@ class DatabaseCluster:
         """
         self._maybe_resync()
         try:
-            row, info = self._transaction(PRIMARY, fn)
+            row, info, extra = self._write_transaction(PRIMARY, fn)
         except Exception as exc:  # noqa: BLE001
             if not is_failover_error(exc):
                 raise
             self._record_primary_failure(exc, "escritura")
             try:
-                row, info = self._transaction(REPLICA, fn)
+                row, info, extra = self._write_transaction(REPLICA, fn)
             except Exception as exc_replica:  # noqa: BLE001
                 if not is_failover_error(exc_replica):
                     raise
@@ -314,7 +331,9 @@ class DatabaseCluster:
             return WriteResult(row=row, info=info, db_used=DB_USED_FAILOVER, replication="pending")
 
         self._record_primary_success()
-        replication = self._replicate(row, REPLICA, table)
+        results = [self._replicate(row, REPLICA, table)]
+        results += [self._replicate(extra_row, REPLICA, extra_table) for extra_table, extra_row in extra]
+        replication = "synced" if all(r == "synced" for r in results) else "pending"
         return WriteResult(row=row, info=info, db_used=DB_USED_PRIMARY, replication=replication)
 
     def _replicate(self, row: dict[str, Any], target: str, table: Table) -> str:
@@ -487,6 +506,7 @@ class DatabaseCluster:
                     "rows": len(per_table["orders"]),
                     "active_orders": active,
                     "users": len(per_table["users"]),
+                    "audit_entries": len(per_table["audit_log"]),
                 }
             except SimulatedPrimaryDownError as exc:
                 databases[name] = {"status": "simulated_down", "detail": str(exc)}

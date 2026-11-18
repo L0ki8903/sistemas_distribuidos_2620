@@ -318,7 +318,11 @@ try {
   await clickButton("Restaurar BD Primaria");
   await waitText(".toast", "reconciliación");
   const toast = await page.$$eval(".toast", (els) => els.map((e) => e.textContent).join(" | "));
-  check("Al restaurar, la reconciliación copia 1 fila réplica → primaria", toast.includes("1 fila(s) copiadas"), toast);
+  check(
+    "Al restaurar, la reconciliación copia el pedido (y su auditoría) réplica → primaria",
+    toast.includes("1 pedido(s)") && toast.includes("registro(s) de auditoría"),
+    toast,
+  );
   await waitText(".sync-line", "Réplica en sincronía", 12000);
   check("Panel indica 'Réplica en sincronía'", true);
   await shot("07_reconciliacion.png", ".cluster");
@@ -415,6 +419,75 @@ try {
   await sleep(300);
   await page.screenshot({ path: path.join(OUT, "09_vista_movil.png") });
   console.log("      📸 09_vista_movil.png");
+
+  // ------------------------------------------------------------------ administración de datos (admin)
+  await page.setViewport({ width: 1440, height: 1000 });
+  await clickButton("Cerrar sesión");
+  await page.waitForSelector(".login-card");
+  await fillLogin(ADMIN_USER, ADMIN_PASSWORD);
+  await clickButton("Entrar", ".login-card");
+  await page.waitForSelector(".role-badge");
+  await clickButton("Administración", ".tabs");
+  const clientRow = `tr[data-username="${clientUser}"]`;
+  await page.waitForSelector(clientRow, { timeout: 10000 });
+  const clientOrders = await page.$eval(`${clientRow} td.num`, (td) => td.textContent.trim());
+  check("Administración: lista de usuarios con sus pedidos", clientOrders === "1", `${clientUser}: ${clientOrders} pedido(s)`);
+  const selfButtons = await page.$$eval(`tr[data-username="${ADMIN_USER}"] button`, (bs) =>
+    bs.filter((b) => /Desactivar|Eliminar/.test(b.textContent)).map((b) => b.disabled),
+  );
+  check("Administración: el admin no puede desactivarse ni eliminarse", selfButtons.length === 2 && selfButtons.every(Boolean));
+
+  const clickInSelector = (selector, label) =>
+    page.evaluate(
+      (selector, label) => {
+        const btn = [...document.querySelectorAll(`${selector} button`)].find((b) => b.textContent.trim() === label && !b.disabled);
+        btn?.click();
+        return Boolean(btn);
+      },
+      selector,
+      label,
+    );
+  await clickInSelector(clientRow, "Editar");
+  await page.waitForSelector(".dialog");
+  const nameInput = await page.$(".dialog .field input");
+  await nameInput.click({ clickCount: 3 });
+  await nameInput.type("Camila Rojas Pérez");
+  await clickButton("Guardar cambios", ".dialog");
+  await page.waitForFunction((sel) => document.querySelector(sel)?.textContent.includes("Camila Rojas Pérez"), { timeout: 10000 }, clientRow);
+  check("Administración: editar el nombre de un usuario", true);
+  await clickInSelector(clientRow, "Desactivar");
+  await page.waitForFunction((sel) => document.querySelector(sel)?.textContent.includes("Desactivada"), { timeout: 10000 }, clientRow);
+  check("Administración: desactivar una cuenta", true);
+  await sleep(400);
+  await shot("12_administracion_usuarios.png");
+
+  await clickButton("Pedidos", ".admin-views");
+  const deliveredRow = 'tr[data-customer="María Fernanda López"]';
+  await page.waitForSelector(deliveredRow, { timeout: 10000 });
+  await clickInSelector(deliveredRow, "Corregir");
+  await page.waitForSelector(".dialog select");
+  await page.select(".dialog select", "enviado");
+  await clickButton("Guardar corrección", ".dialog");
+  await page.waitForFunction((sel) => document.querySelector(`${sel} .status`)?.textContent === "Enviado", { timeout: 10000 }, deliveredRow);
+  check("Administración: corrección de un pedido entregado (estado hacia atrás)", true);
+  const deletedRow = 'tr[data-customer="Pedido con nodo caído"]';
+  await page.waitForSelector(deletedRow, { timeout: 10000 });
+  await clickInSelector(deletedRow, "Restaurar");
+  await page.waitForFunction((sel) => !document.querySelector(sel)?.classList.contains("row-deleted"), { timeout: 10000 }, deletedRow);
+  check("Administración: restaurar un pedido eliminado", true);
+
+  await clickButton("Auditoría", ".admin-views");
+  await page.waitForFunction(() => document.querySelectorAll(".audit-table tbody tr").length > 5, { timeout: 10000 });
+  const auditActions = await page.$$eval(".audit-table tbody tr", (rows) =>
+    rows.map((r) => `${r.children[1].textContent}|${r.children[2].textContent}`),
+  );
+  const expected = ["admin|Restauró pedido", "admin|Corrección admin", "admin|Desactivó cuenta", "admin|Editó usuario", `${clientUser}|Creó pedido`, `${clientUser}|Registro`];
+  check(
+    "Administración: la auditoría registra quién hizo cada cambio",
+    expected.every((e) => auditActions.includes(e)),
+    `${auditActions.length} registros`,
+  );
+  await shot("13_auditoria.png");
 } catch (error) {
   check(`Ejecución sin excepciones`, false, error.message);
   await page.screenshot({ path: path.join(OUT, "_error.png"), fullPage: true });

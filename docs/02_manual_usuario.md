@@ -199,6 +199,37 @@ sistema. Se actualiza sola cada 3 segundos; **Pausar actualización** congela la
 
 Un nodo apagado aparece como **Inalcanzable**: el resto del panel sigue funcionando.
 
+### 5.4 Panel de administración (administrador)
+
+![Gestión de usuarios](img/12_administracion_usuarios.png)
+
+La pestaña **Administración** reúne la gestión de los datos. Arriba muestra los totales (usuarios activos,
+pedidos por estado, pedidos y cuentas eliminados, registros de auditoría) y tiene tres vistas:
+
+**Usuarios**: buscar por usuario o nombre y filtrar por rol o estado. En cada fila:
+
+| Botón | Qué hace |
+|-------|----------|
+| **Editar** | Cambiar el nombre o el rol (Cliente ↔ Administrador). El cambio vale al instante, sin que la persona vuelva a entrar |
+| **Contraseña** | Poner una contraseña nueva (mínimo 8 caracteres, con letras y números) |
+| **Desactivar / Reactivar** | Una cuenta desactivada se cierra al momento en ambos servidores y no puede iniciar sesión |
+| **Eliminar** | Borra la cuenta: se **anonimiza** (usuario y nombre) y se elige si sus pedidos se **conservan** o se **eliminan**. Para confirmar hay que escribir el nombre de usuario |
+
+Tu propia cuenta aparece marcada con **Tú** y no puedes desactivarla, eliminarla ni quitarte el rol de
+administrador, así el sistema nunca queda sin administradores.
+
+**Pedidos**: todos los pedidos, incluidos los **eliminados** (en gris).
+
+- **Corregir** permite cambiar cualquier dato y cualquier estado, incluso devolver un pedido entregado a
+  "Enviado".
+- **Restaurar** recupera un pedido eliminado.
+
+**Auditoría**: el historial de cambios, con quién lo hizo, qué acción, qué cambió (valor anterior tachado
+→ valor nuevo) y qué servidor lo procesó. Se puede filtrar por pedidos o usuarios y por la persona que
+actuó.
+
+![Registro de auditoría](img/13_auditoria.png)
+
 ## 6. Gestión de pedidos
 
 ### 6.1 Crear un pedido
@@ -337,6 +368,9 @@ horizontal. La captura muestra la vista de un cliente.
 | No aparece el botón **Editar** | Sólo los pedidos en estado Pendiente se pueden editar |
 | Quiero volver a los datos de ejemplo | `docker compose down -v && docker compose up -d --build` (borra también los usuarios) |
 | No sé la contraseña del administrador | Ver §4.1 (registros o `python -m app.cli create-admin`) |
+| Una persona no puede entrar (*"La cuenta está desactivada"*) | Un administrador debe **Reactivar** su cuenta en Administración → Usuarios |
+| Borré un pedido por error | Administración → Pedidos → **Restaurar** (los pedidos eliminados se conservan) |
+| ¿Quién cambió este pedido? | Administración → Auditoría, buscando por la persona o revisando el pedido |
 | *"Usuario o contraseña incorrectos"* | Revisar mayúsculas/minúsculas de la contraseña (el usuario no distingue mayúsculas) |
 | *"Demasiados intentos fallidos"* | Esperar unos minutos (el tiempo exacto aparece en el mensaje) |
 | *"Tu sesión terminó"* | La sesión expiró o la cuenta fue desactivada: volver a iniciar sesión |
@@ -360,3 +394,5 @@ horizontal. La captura muestra la vista de un cliente.
 | **Caída simulada** | Fallo provocado a propósito desde el panel para demostrar la tolerancia a fallos |
 | **Sesión / token** | Credencial temporal que se obtiene al iniciar sesión y que ambos servidores reconocen |
 | **Rol** | Tipo de usuario: *Cliente* (sus pedidos) o *Administrador* (todo el sistema) |
+| **Auditoría** | Historial de quién cambió qué, cuándo y en qué servidor |
+| **Anonimizar** | Reemplazar los datos personales de una cuenta eliminada para que no identifiquen a la persona |

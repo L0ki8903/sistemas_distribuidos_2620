@@ -173,7 +173,8 @@ def test_failover_bd_primaria_a_replica_y_reconciliacion(client, db):
     up = client.put("/api/chaos/db-primary", json={"enabled": False})
     sync = up.json()["sync"]
     assert sync["status"] == "ok"
-    assert sync["copied_to_primary"] == 2
+    assert sync["tables"]["orders"]["copied_to_primary"] == 2
+    assert sync["tables"]["audit_log"]["copied_to_primary"] == 2  # la auditoría también se reconcilia
 
     assert db.primary(order_b) is not None
     assert db.primary(order_a)["status"] == "en proceso"
@@ -353,7 +354,7 @@ def test_comunicacion_entre_nodos_reenvia_caos_y_propaga_caida_de_bd(make_settin
 
             # Al restaurar, el nodo que recibe la orden reconcilia primero y lo informa.
             up = alpha.put("/api/chaos/db-primary", json={"enabled": False}).json()
-            assert up["sync"]["copied_to_primary"] == 1
+            assert up["sync"]["tables"]["orders"]["copied_to_primary"] == 1
             assert up["propagated_to"][1]["sync"]["copied_to_primary"] == 0  # ya estaba al día
             assert beta.get("/api/chaos/local").json()["simulate_db_primary_down"] is False
 

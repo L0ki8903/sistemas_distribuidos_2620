@@ -201,12 +201,15 @@ def test_login_y_registro_funcionan_con_la_bd_primaria_caida(raw_client, db):
     assert db.user(PRIMARY, "hugo") is None  # la primaria está atrasada
 
     restored = raw_client.put("/api/chaos/db-primary", json={"enabled": False}, headers=admin).json()
-    assert restored["sync"]["copied_to_primary"] == 2
-    assert restored["sync"]["tables"]["users"]["copied_to_primary"] == 1
-    assert restored["sync"]["tables"]["orders"]["copied_to_primary"] == 1
+    tables = restored["sync"]["tables"]
+    assert tables["users"]["copied_to_primary"] == 1
+    assert tables["orders"]["copied_to_primary"] == 1
+    assert tables["audit_log"]["copied_to_primary"] == 2  # registro + pedido, auditados durante la caída
+    assert restored["sync"]["copied_to_primary"] == 4
     assert db.user(PRIMARY, "hugo") is not None
     status = raw_client.get("/api/replication/status", headers=admin).json()
-    assert status["in_sync"] is True and status["divergent_by_table"] == {"orders": 0, "users": 0}
+    assert status["in_sync"] is True
+    assert status["divergent_by_table"] == {"orders": 0, "users": 0, "audit_log": 0}
 
 
 def test_admin_inicial_se_crea_una_sola_vez_y_con_contrasena_generada(make_settings, caplog):

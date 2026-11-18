@@ -57,7 +57,9 @@ def get_active_user(session: Session, user_id: str) -> dict[str, Any] | None:
     return row_of_user(user)
 
 
-def register_user(session: Session, username: str, full_name: str, password_hash: str) -> tuple[dict[str, Any], bool]:
+def register_user(
+    session: Session, username: str, full_name: str, password_hash: str, node_id: str = "?"
+) -> tuple[dict[str, Any], bool]:
     if find_user_row(session, username) is not None:
         raise UsernameTakenError(username)
     now = utcnow()
@@ -74,6 +76,13 @@ def register_user(session: Session, username: str, full_name: str, password_hash
     )
     session.add(user)
     session.flush()
+    from . import audit  # import tardío: audit depende de database, que no debe depender de users
+    from .security import Actor
+
+    audit.record(
+        session, Actor(user.id, user.username, user.full_name, user.role), node_id,
+        "user.register", "user", user.id, f"Se registró la cuenta '{user.username}' (rol cliente)",
+    )
     return row_of_user(user), True
 
 
@@ -126,4 +135,11 @@ def upsert_admin(session: Session, username: str, password_hash: str, full_name:
         user.updated_at = now
         created = False
     session.flush()
+    from . import audit
+
+    audit.record(
+        session, None, "cli", "user.admin_cli", "user", user.id,
+        f"{'Creó' if created else 'Restableció'} el administrador '{user.username}' desde la línea de comandos",
+        actor_label="cli",
+    )
     return row_of_user(user), created

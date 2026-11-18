@@ -165,3 +165,81 @@ class TokenResponse(BaseModel):
 class MeResponse(BaseModel):
     node: str
     user: UserOut
+
+
+# ---------------------------------------------------------------------- administración
+def _check_password_strength(value: str) -> str:
+    if not any(c.isalpha() for c in value) or not any(c.isdigit() for c in value):
+        raise ValueError("La contraseña debe tener al menos una letra y un número")
+    return value
+
+
+class AdminUserUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    full_name: str | None = Field(default=None, min_length=2, max_length=120)
+    role: UserRole | None = None
+    is_active: bool | None = None
+
+    @field_validator("full_name")
+    @classmethod
+    def strip_full_name(cls, value: str | None) -> str | None:
+        return value.strip() if value is not None else value
+
+    @model_validator(mode="after")
+    def at_least_one_field(self) -> "AdminUserUpdate":
+        if self.full_name is None and self.role is None and self.is_active is None:
+            raise ValueError("Debe enviar al menos uno de: full_name, role, is_active")
+        return self
+
+
+class PasswordReset(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    new_password: str = Field(min_length=8, max_length=128)
+
+    @field_validator("new_password")
+    @classmethod
+    def password_strength(cls, value: str) -> str:
+        return _check_password_strength(value)
+
+
+class AdminOrderUpdate(BaseModel):
+    """Corrección administrativa: a diferencia de PATCH /api/orders, admite cualquier estado."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    customer_name: str | None = Field(default=None, min_length=2, max_length=120)
+    items: list[OrderItem] | None = Field(default=None, min_length=1, max_length=50)
+    status: OrderStatus | None = None
+
+    @model_validator(mode="after")
+    def at_least_one_field(self) -> "AdminOrderUpdate":
+        if self.customer_name is None and self.items is None and self.status is None:
+            raise ValueError("Debe enviar al menos uno de: customer_name, items, status")
+        return self
+
+
+class AdminUserOut(BaseModel):
+    id: str
+    username: str
+    full_name: str
+    role: UserRole
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+    deleted_at: datetime | None
+    orders_count: int
+
+
+class AuditOut(BaseModel):
+    id: str
+    created_at: datetime
+    actor_id: str | None
+    actor_username: str
+    action: str
+    entity: str
+    entity_id: str
+    summary: str
+    changes: dict | None
+    node: str

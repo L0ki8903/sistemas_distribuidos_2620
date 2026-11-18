@@ -31,6 +31,7 @@ flowchart LR
 | Sesión JWT sin estado + usuarios replicados | La sesión es válida en ambos nodos y el login funciona aunque caiga un nodo o `db-primary` |
 | Roles `user` / `admin` + cabeceras de seguridad | Cada cliente ve sólo sus pedidos; sólo el admin cambia estados y usa el caos; CSP estricta en el gateway |
 | Panel de monitoreo (admin) | Métricas y eventos de cada nodo reunidos por REST, estado del gateway y de las bases, en vivo |
+| Panel de administración + auditoría replicada | Gestionar usuarios (rol, desactivar, contraseña, eliminar anonimizando) y pedidos (corregir, restaurar); cada cambio queda auditado en la misma transacción |
 
 Detalles en el [Manual Técnico](docs/01_manual_tecnico.md).
 
@@ -122,6 +123,9 @@ docker compose start backend-node-1
 | POST / PUT | `/api/chaos/db-primary/toggle` · `/api/chaos/db-primary` | Simular/restaurar la caída de `db-primary` (todo el clúster) | admin |
 | GET / POST | `/api/replication/status` · `/api/replication/sync` | Estado de sincronía / forzar reconciliación | admin |
 | GET | `/api/monitoring/local` · `/api/monitoring/cluster` | Métricas y eventos de un nodo / de todo el clúster (`?window=300`) | admin |
+| GET / PATCH / POST / DELETE | `/api/admin/users…` | Listar, editar (nombre, rol, activo), restablecer contraseña, eliminar (`?orders=keep\|delete`) | admin |
+| GET / PATCH / POST | `/api/admin/orders…` | Listar (con eliminados), corrección administrativa, `…/{id}/restore` | admin |
+| GET | `/api/admin/summary` · `/api/admin/audit` | Totales y registro de auditoría | admin |
 
 Las rutas con sesión requieren `Authorization: Bearer <token>`; sin token responden `401`, y con rol
 insuficiente `403`. Todas las respuestas incluyen la cabecera `X-Handled-By-Node`; las de pedidos, `db_used` y
@@ -145,8 +149,8 @@ VITE_API_PROXY=http://localhost:8000 npm run dev    # http://localhost:5173
 
 ```bash
 cd backend
-python -m pytest -v                                                     # 36 pruebas con SQLite temporal (e2e se omiten)
-TEST_PRIMARY_DB_URL=postgresql://… TEST_REPLICA_DB_URL=postgresql://… python -m pytest tests/test_orders.py tests/test_auth.py tests/test_monitoring.py   # PostgreSQL real
+python -m pytest -v                                                     # 48 pruebas con SQLite temporal (e2e se omiten)
+TEST_PRIMARY_DB_URL=postgresql://… TEST_REPLICA_DB_URL=postgresql://… python -m pytest tests/test_orders.py tests/test_auth.py tests/test_monitoring.py tests/test_admin.py   # PostgreSQL real
 CLUSTER_BASE_URL=http://localhost:8080 CLUSTER_ADMIN_PASSWORD=… python -m pytest tests/test_cluster_e2e.py -v   # e2e contra el clúster
 
 cd ../e2e-ui && npm install && UI_ADMIN_PASSWORD=… node ui-test.mjs     # interfaz con Chrome headless + capturas
@@ -154,8 +158,8 @@ cd ../e2e-ui && npm install && UI_ADMIN_PASSWORD=… node ui-test.mjs     # inte
 
 > ⚠️ Con `TEST_*_DB_URL` las tablas se vacían en cada test: usa una base aparte (p. ej. `orders_test`).
 
-Resultados: **36/36** (SQLite y PostgreSQL 16; 15 de pedidos/fallos + 13 de seguridad + 8 de monitoreo),
-**6/6** e2e, **44/44** de interfaz. Ver
+Resultados: **48/48** (SQLite y PostgreSQL 16; 15 de pedidos/fallos + 13 de seguridad + 8 de monitoreo +
+12 de administración), **7/7** e2e, **52/52** de interfaz. Ver
 [Informe de Pruebas](docs/03_informe_pruebas.md).
 
 ### Integración continua (GitHub Actions)
@@ -227,6 +231,6 @@ sesión de administrador.
 
 ## Documentación
 
-- [Manual Técnico](docs/01_manual_tecnico.md) — arquitectura, diagramas Mermaid, tolerancia a fallos, seguridad, monitoreo, API
+- [Manual Técnico](docs/01_manual_tecnico.md) — arquitectura, diagramas Mermaid, tolerancia a fallos, seguridad, monitoreo, administración y auditoría, API
 - [Manual de Usuario](docs/02_manual_usuario.md) — instalación, uso y guion de demostración con capturas
 - [Informe de Pruebas](docs/03_informe_pruebas.md) — casos, salida real de pytest, pruebas de fallo y conclusiones

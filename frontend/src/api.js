@@ -100,6 +100,15 @@ async function request(method, path, { body, silent = false, auth = true } = {})
   return { data, meta };
 }
 
+function query(params) {
+  const search = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== "") search.set(key, String(value));
+  });
+  const text = search.toString();
+  return text ? `?${text}` : "";
+}
+
 export const api = {
   login: (username, password) =>
     request("POST", "/api/auth/login", { body: { username, password }, auth: false }),
@@ -116,4 +125,15 @@ export const api = {
   setDbPrimaryDown: (enabled) => request("PUT", "/api/chaos/db-primary", { body: { enabled } }),
   syncReplication: () => request("POST", "/api/replication/sync"),
   monitoringCluster: (window = 300) => request("GET", `/api/monitoring/cluster?window=${window}`, { silent: true }),
+  // Administración (lecturas silenciosas; las escrituras aparecen en el registro de peticiones)
+  adminSummary: () => request("GET", "/api/admin/summary", { silent: true }),
+  adminUsers: (params = {}) => request("GET", `/api/admin/users${query(params)}`, { silent: true }),
+  adminUpdateUser: (id, body) => request("PATCH", `/api/admin/users/${id}`, { body }),
+  adminResetPassword: (id, newPassword) =>
+    request("POST", `/api/admin/users/${id}/reset-password`, { body: { new_password: newPassword } }),
+  adminDeleteUser: (id, orders) => request("DELETE", `/api/admin/users/${id}${query({ orders })}`),
+  adminOrders: (params = {}) => request("GET", `/api/admin/orders${query(params)}`, { silent: true }),
+  adminUpdateOrder: (id, body) => request("PATCH", `/api/admin/orders/${id}`, { body }),
+  adminRestoreOrder: (id) => request("POST", `/api/admin/orders/${id}/restore`),
+  adminAudit: (params = {}) => request("GET", `/api/admin/audit${query(params)}`, { silent: true }),
 };

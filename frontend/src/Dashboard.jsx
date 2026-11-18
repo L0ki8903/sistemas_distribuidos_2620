@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, onApiEvent } from "./api.js";
 import ClusterPanel from "./components/ClusterPanel.jsx";
+import AdminPanel from "./components/AdminPanel.jsx";
 import MonitoringPanel from "./components/MonitoringPanel.jsx";
 import OrderForm from "./components/OrderForm.jsx";
 import OrdersTable from "./components/OrdersTable.jsx";
@@ -13,11 +14,15 @@ const LOG_SIZE = 30;
 
 export default function Dashboard({ user, onLogout }) {
   const isAdmin = user.role === "admin";
-  // Pestañas del administrador; el hash (#monitoreo) permite enlazar directamente al panel.
-  const [tab, setTab] = useState(() => (isAdmin && window.location.hash === "#monitoreo" ? "monitoreo" : "operacion"));
+  // Pestañas del administrador; el hash (#monitoreo, #administracion) permite enlazar directamente.
+  const TABS = ["operacion", "monitoreo", "administracion"];
+  const [tab, setTab] = useState(() => {
+    const fromHash = window.location.hash.slice(1);
+    return isAdmin && TABS.includes(fromHash) ? fromHash : "operacion";
+  });
   const selectTab = (next) => {
     setTab(next);
-    window.history.replaceState(null, "", next === "monitoreo" ? "#monitoreo" : window.location.pathname);
+    window.history.replaceState(null, "", next === "operacion" ? window.location.pathname : `#${next}`);
   };
   const [orders, setOrders] = useState([]);
   const [ordersState, setOrdersState] = useState({ loading: true, error: null, dbUsed: null });
@@ -94,7 +99,7 @@ export default function Dashboard({ user, onLogout }) {
   }, []);
 
   const refreshCluster = useCallback(async () => {
-    if (!isAdmin || document.location.hash === "#monitoreo") return; // sólo admin, y sólo en "Operación"
+    if (!isAdmin || document.location.hash) return; // sólo admin, y sólo en la pestaña "Operación"
     const [status, repl] = await Promise.allSettled([api.clusterStatus(), api.replicationStatus()]);
     if (status.status === "fulfilled") setCluster(status.value.data);
     if (repl.status === "fulfilled") setReplication(repl.value.data);
@@ -199,8 +204,13 @@ export default function Dashboard({ user, onLogout }) {
         if (enabled) {
           notify("warn", "db-primary caída (simulado) en todo el clúster: lecturas y escrituras van a db-replica");
         } else {
-          const copied = data.sync?.copied_to_primary ?? 0;
-          notify("success", `db-primary restaurada · reconciliación: ${copied} fila(s) copiadas réplica → primaria`);
+          const tables = data.sync?.tables ?? {};
+          const orders = tables.orders?.copied_to_primary ?? 0;
+          const auditRows = tables.audit_log?.copied_to_primary ?? 0;
+          notify(
+            "success",
+            `db-primary restaurada · reconciliación: ${orders} pedido(s) y ${auditRows} registro(s) de auditoría copiados réplica → primaria`,
+          );
         }
         loadOrders({ silent: true }).catch(() => {});
       } catch (error) {
@@ -282,10 +292,15 @@ export default function Dashboard({ user, onLogout }) {
             <button type="button" role="tab" aria-selected={tab === "monitoreo"} className={tab === "monitoreo" ? "tab active" : "tab"} onClick={() => selectTab("monitoreo")}>
               Monitoreo
             </button>
+            <button type="button" role="tab" aria-selected={tab === "administracion"} className={tab === "administracion" ? "tab active" : "tab"} onClick={() => selectTab("administracion")}>
+              Administración
+            </button>
           </nav>
         )}
         {tab === "monitoreo" ? (
           <MonitoringPanel />
+        ) : tab === "administracion" ? (
+          <AdminPanel currentUser={user} notify={notify} />
         ) : (
           <>
         <ClusterPanel

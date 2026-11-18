@@ -22,6 +22,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from . import audit
 from .models import ORDER_COLUMNS, Order, User, utcnow
 from .schemas import OrderCreate, OrderUpdate
 from .security import Actor, PermissionDeniedError
@@ -156,7 +157,14 @@ def create_order(session: Session, data: OrderCreate, node_id: str, actor: Actor
     )
     session.add(order)
     session.flush()
+    audit.record(
+        session, actor, node_id, "order.create", "order", order_id,
+        f"Creó el pedido #{order_id[:8]} de '{data.customer_name}' por {order.total}",
+    )
     return row_of(order), True
+
+
+AUDITED_ORDER_FIELDS = ("customer_name", "items", "total", "status")
 
 
 def update_order(
@@ -167,6 +175,7 @@ def update_order(
     if order is None or order.deleted_at is not None or not _can_see(order, actor):
         raise OrderNotFoundError(order_id)
 
+    before = row_of(order)
     changes = data.model_dump(exclude_none=True)
     new_status = changes.get("status")
     if new_status is not None and new_status != order.status and not actor.is_admin:
@@ -194,6 +203,18 @@ def update_order(
         order.updated_at = utcnow()
         order.handled_by_node = node_id
         session.flush()
+        after = row_of(order)
+        delta = audit.diff(before, after, AUDITED_ORDER_FIELDS)
+        if set(delta) == {"status"}:
+            audit.record(
+                session, actor, node_id, "order.status", "order", order_id,
+                f"Cambió el estado de #{order_id[:8]}: {before['status']} → {after['status']}", delta,
+            )
+        else:
+            audit.record(
+                session, actor, node_id, "order.update", "order", order_id,
+                f"Editó el pedido #{order_id[:8]} ({', '.join(delta)})", delta,
+            )
     return row_of(order), changed
 
 
@@ -213,4 +234,8 @@ def delete_order(session: Session, order_id: str, node_id: str, actor: Actor) ->
     order.updated_at = now
     order.handled_by_node = node_id
     session.flush()
+    audit.record(
+        session, actor, node_id, "order.delete", "order", order_id,
+        f"Eliminó el pedido #{order_id[:8]} de '{order.customer_name}' (estado: {order.status})",
+    )
     return row_of(order), False

@@ -1,6 +1,6 @@
 # Manual Técnico — Sistema Distribuido de Gestión de Pedidos Tolerante a Fallos
 
-> Proyecto final de Sistemas Distribuidos · Versión 1.2.0 (autenticación, seguridad y monitoreo) · Noviembre de 2026
+> Proyecto final de Sistemas Distribuidos · Versión 1.3.0 (autenticación, seguridad, monitoreo y administración) · Noviembre de 2026
 
 ## Contenido
 
@@ -13,12 +13,13 @@
 7. [Diagramas de secuencia de fallos](#7-diagramas-de-secuencia-de-fallos)
 8. [Autenticación y seguridad](#8-autenticación-y-seguridad)
 9. [Monitoreo de nodos](#9-monitoreo-de-nodos)
-10. [Modelo de datos y máquina de estados](#10-modelo-de-datos-y-máquina-de-estados)
-11. [Referencia de la API](#11-referencia-de-la-api)
-12. [Ejemplo de fallo simulado paso a paso](#12-ejemplo-de-fallo-simulado-paso-a-paso)
-13. [Tecnologías empleadas y justificación](#13-tecnologías-empleadas-y-justificación)
-14. [Variables de entorno](#14-variables-de-entorno)
-15. [Decisiones de diseño, limitaciones y trabajo futuro](#15-decisiones-de-diseño-limitaciones-y-trabajo-futuro)
+10. [Administración de datos y auditoría](#10-administración-de-datos-y-auditoría)
+11. [Modelo de datos y máquina de estados](#11-modelo-de-datos-y-máquina-de-estados)
+12. [Referencia de la API](#12-referencia-de-la-api)
+13. [Ejemplo de fallo simulado paso a paso](#13-ejemplo-de-fallo-simulado-paso-a-paso)
+14. [Tecnologías empleadas y justificación](#14-tecnologías-empleadas-y-justificación)
+15. [Variables de entorno](#15-variables-de-entorno)
+16. [Decisiones de diseño, limitaciones y trabajo futuro](#16-decisiones-de-diseño-limitaciones-y-trabajo-futuro)
 
 ---
 
@@ -39,7 +40,8 @@ primaria en caliente para demostrar el comportamiento ante fallos.
 Desde la versión 1.1 el acceso está **autenticado** (JWT) y **autorizado por roles** (`user` = cliente,
 `admin` = operador). La sesión sigue funcionando aunque caiga un nodo o la base primaria (§8).
 La versión 1.2 añade un **panel de monitoreo** para el administrador: tráfico, latencia, errores y eventos
-de cada nodo, del gateway y de las bases, reunidos por REST entre nodos (§9).
+de cada nodo, del gateway y de las bases, reunidos por REST entre nodos (§9). La 1.3 añade un **panel de
+administración de datos** con **auditoría replicada** de cada cambio (§10).
 
 ---
 
@@ -111,6 +113,8 @@ flowchart LR
 │   │   ├── bootstrap.py         Crea el administrador inicial al arrancar (id determinista)
 │   │   ├── cli.py               python -m app.cli create-admin (crear/restablecer administradores)
 │   │   ├── metrics.py           Métricas por nodo en memoria, eventos desde los logs, stub_status de NGINX
+│   │   ├── admin.py             Gestión de usuarios y corrección/restauración de pedidos (con protecciones)
+│   │   ├── audit.py             Registro de auditoría en la misma transacción que el cambio
 │   │   ├── database.py          DatabaseCluster: doble sesión, escritura dual, failover,
 │   │   │                        circuit breaker y reconciliación
 │   │   ├── services.py          Reglas de negocio: CRUD, máquina de estados, permisos por rol, idempotencia
@@ -119,12 +123,13 @@ flowchart LR
 │   │   ├── chaos.py             Banderas SIMULATE_CRASH / SIMULATE_DB_PRIMARY_DOWN
 │   │   ├── peers.py             Cliente REST entre nodos (httpx)
 │   │   ├── deps.py              Dependencias FastAPI: sesión (get_current_actor) y require_admin
-│   │   └── routers/             auth.py · orders.py · chaos.py · system.py · monitoring.py
-│   ├── tests/                   test_orders.py (15) · test_auth.py (13) · test_monitoring.py (8) · test_cluster_e2e.py (6)
+│   │   └── routers/             auth.py · orders.py · chaos.py · system.py · monitoring.py · admin.py
+│   ├── tests/                   test_orders.py (15) · test_auth.py (13) · test_monitoring.py (8) · test_admin.py (12)
+│   │                            · test_cluster_e2e.py (7)
 │   └── Dockerfile, requirements*.txt, pytest.ini
 ├── frontend/                    React 18 + Vite (dashboard logístico)
 │   └── src/ App.jsx (puerta de sesión) · Dashboard.jsx · auth.js · api.js · format.js ·
-│            components/ (LoginPage, ClusterPanel, MonitoringPanel, LineChart, OrderForm, OrdersTable,
+│            components/ (LoginPage, ClusterPanel, MonitoringPanel, LineChart, AdminPanel, Dialog, OrderForm, OrdersTable,
 │                         RequestLog, Toasts) · styles.css
 ├── nginx/                       nginx.conf (upstream + failover) · security-headers.conf · Dockerfile multi-stage
 ├── database/                    init.sql (tablas orders/users + 3 pedidos) · Dockerfile
@@ -193,7 +198,7 @@ proxy_next_upstream error timeout http_500 http_502 http_503 http_504 non_idempo
 proxy_next_upstream_tries 2;
 ```
 
-- **Round-Robin** reparte las peticiones alternando nodos (evidencia: §12).
+- **Round-Robin** reparte las peticiones alternando nodos (evidencia: §13).
 - Si un nodo **no acepta la conexión, excede el timeout o responde 5xx**, NGINX **reintenta la misma
   petición en el otro nodo** y el cliente recibe la respuesta buena. Tras un fallo, el nodo queda
   excluido 10 s (`max_fails=1 fail_timeout=10s`) y luego se vuelve a probar con tráfico real.
@@ -404,7 +409,7 @@ sequenceDiagram
 
 ### 8.2 Usuarios replicados
 
-La tabla `users` (§10.2) se trata exactamente igual que `orders`: **escritura dual**, **failover** y
+La tabla `users` (§11.2) se trata exactamente igual que `orders`: **escritura dual**, **failover** y
 **reconciliación last-write-wins**. Por eso se puede **registrar e iniciar sesión con la primaria
 caída**, y las cuentas creadas durante la caída se copian a la primaria al recuperarse (prueba S-10 del
 informe). Si durante una partición se creara el mismo `username` en ambas bases con ids distintos, la
@@ -448,7 +453,7 @@ crea cuentas `user`: el campo `role` no se acepta (422), así que nadie puede au
 - El mismo mensaje y el mismo tiempo de respuesta para "usuario inexistente" y "contraseña incorrecta"
   (se ejecuta un PBKDF2 ficticio), para no permitir **enumerar usuarios**.
 - **Límite de intentos**: 5 fallos en 5 minutos por (usuario, IP) devuelven **429** con `Retry-After`.
-  El contador vive en la memoria de cada nodo (limitación en §15).
+  El contador vive en la memoria de cada nodo (limitación en §16).
 - El hash se calcula **fuera de la transacción** para no retener conexiones a la base.
 
 ### 8.5 Seguridad en el gateway
@@ -560,9 +565,76 @@ leyendo/escribiendo/en espera). La prueba e2e E-06 verifica que desde fuera no e
 
 ---
 
-## 10. Modelo de datos y máquina de estados
+## 10. Administración de datos y auditoría
 
-### 10.1 Tabla `orders` (idéntica en `db-primary` y `db-replica`)
+Pestaña **Administración** del administrador (`AdminPanel.jsx`), sobre `/api/admin/*` (sólo `admin`).
+
+### 10.1 Auditoría replicada
+
+Cada cambio en pedidos y usuarios deja una fila en `audit_log` (§11.3): **quién** (usuario), **qué**
+(acción y `{campo: [antes, después]}`), **cuándo** y **en qué nodo**. Dos decisiones la hacen fiable en
+un sistema distribuido:
+
+1. **Misma transacción que el cambio.** La entrada se inserta dentro de la transacción del cambio que
+   describe; si una falla, fallan las dos. No puede existir un cambio sin auditar ni una auditoría de un
+   cambio que no ocurrió.
+2. **Se replica igual que los datos.** La regla de negocio marca las filas extra con
+   `queue_replication(session, tabla, fila)` y `DatabaseCluster.write()` replica la fila principal y las
+   extra en la réplica. Si la primaria cae, la auditoría queda en la réplica y la reconciliación la copia
+   después (en la respuesta de sync aparece en `tables.audit_log`).
+
+Acciones registradas: `order.create`, `order.update`, `order.status`, `order.delete`,
+`order.admin_update`, `order.restore`, `user.register`, `user.update`, `user.role`, `user.activate`,
+`user.deactivate`, `user.password_reset`, `user.delete` y `user.admin_cli`. Las contraseñas (ni sus
+hashes) **nunca** se guardan en la auditoría.
+
+### 10.2 Gestión de usuarios
+
+| Acción | Efecto | Protección |
+|--------|--------|------------|
+| Editar nombre o rol | Inmediato en **ambos nodos**: cada petición lee el rol actual de la BD (§8.1), sin volver a iniciar sesión | No puede quitarse su propio rol |
+| Desactivar / reactivar | Una cuenta desactivada pierde **al instante** la sesión en cualquier nodo (401) y no puede entrar (403) | No puede desactivarse a sí mismo |
+| Restablecer contraseña | Nuevo hash PBKDF2; la contraseña anterior deja de servir | Misma política (≥ 8, letras y números) |
+| Eliminar cuenta | **Anonimiza** usuario (`eliminado-…`) y nombre, inutiliza la contraseña y deja un *tombstone*; el nombre de usuario queda libre. Sus pedidos se **conservan** o se **eliminan** según se elija | No puede eliminarse a sí mismo |
+
+Como quien actúa siempre es un administrador activo y no puede quitarse permisos, **el sistema nunca se
+queda sin administradores**.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant AD as Admin (panel)
+    participant A as Nodo-Alpha-01
+    participant P as db-primary
+    participant R as db-replica
+    participant B as Nodo-Beta-02
+    participant U as Cliente (sesión abierta)
+    AD->>A: PATCH /api/admin/users/{id} {is_active: false}
+    A->>P: BEGIN · UPDATE users · INSERT audit_log · COMMIT
+    A->>R: UPSERT users + audit_log (escritura dual)
+    A-->>AD: 200 {replication: "synced"}
+    U->>B: GET /api/orders (mismo token, aún vigente)
+    B->>P: ¿usuario activo?
+    P-->>B: is_active = false
+    B-->>U: 401: la sesión se revoca sin estado compartido entre nodos
+```
+
+### 10.3 Corrección y restauración de pedidos
+
+- `PATCH /api/orders/{id}` mantiene las reglas estrictas: máquina de estados hacia delante y edición sólo
+  en `pendiente`. La **corrección administrativa** (`PATCH /api/admin/orders/{id}`) permite cambiar
+  cualquier dato y **cualquier estado**, incluso retroceder, para corregir errores. Queda auditada como
+  `order.admin_update` con el antes y el después.
+- Como los borrados son lógicos (*tombstones*, §6.6), un pedido eliminado se puede **restaurar**
+  (`POST /api/admin/orders/{id}/restore`). La vista de pedidos del panel puede incluir los eliminados.
+- Al eliminar una cuenta "con sus pedidos", la anonimización de la cuenta, el borrado lógico de **todos**
+  sus pedidos y la entrada de auditoría van en **una sola transacción** y se replican juntos.
+
+---
+
+## 11. Modelo de datos y máquina de estados
+
+### 11.1 Tabla `orders` (idéntica en `db-primary` y `db-replica`)
 
 | Columna | Tipo PostgreSQL | Descripción |
 |---------|-----------------|-------------|
@@ -580,7 +652,7 @@ leyendo/escribiendo/en espera). La prueba e2e E-06 verifica que desde fuera no e
 Índices: `ix_orders_status`, `ix_orders_updated_at`, `ix_orders_owner_id`. `database/init.sql` crea la tabla y **3 pedidos de
 ejemplo con IDs y fechas fijos**, para que ambas bases arranquen idénticas.
 
-### 10.2 Tabla `users` (idéntica en ambas bases)
+### 11.2 Tabla `users` (idéntica en ambas bases)
 
 | Columna | Tipo PostgreSQL | Descripción |
 |---------|-----------------|-------------|
@@ -592,7 +664,20 @@ ejemplo con IDs y fechas fijos**, para que ambas bases arranquen idénticas.
 | `is_active` | `BOOLEAN` | Una cuenta desactivada no puede iniciar sesión y pierde la sesión actual |
 | `created_at` / `updated_at` / `deleted_at` | `TIMESTAMPTZ` | Igual que en `orders`: versión LWW y tombstone |
 
-### 10.3 Máquina de estados
+### 11.3 Tabla `audit_log` (idéntica en ambas bases; sólo se agregan filas)
+
+| Columna | Tipo PostgreSQL | Descripción |
+|---------|-----------------|-------------|
+| `id` | `VARCHAR(36)` PK | UUID |
+| `created_at` / `updated_at` | `TIMESTAMPTZ` | Momento del cambio (`updated_at` = `created_at`, para la reconciliación LWW) |
+| `actor_id` / `actor_username` | `VARCHAR` | Quién hizo el cambio (`cli` para `python -m app.cli`) |
+| `action` | `VARCHAR(40)` | p. ej. `order.status`, `user.role`, `user.delete` |
+| `entity` / `entity_id` | `VARCHAR` | `order` o `user` y su id |
+| `summary` | `VARCHAR(300)` | Descripción legible |
+| `changes` | `JSONB NULL` | `{campo: [antes, después]}` |
+| `node` | `VARCHAR(50)` | Nodo que procesó el cambio |
+
+### 11.4 Máquina de estados
 
 ```mermaid
 stateDiagram-v2
@@ -617,7 +702,7 @@ Sólo se permite avanzar **al siguiente estado**. Saltar o retroceder devuelve *
 
 ---
 
-## 11. Referencia de la API
+## 12. Referencia de la API
 
 Documentación interactiva (Swagger): **`http://localhost:8080/api/docs`**.
 
@@ -643,6 +728,15 @@ Documentación interactiva (Swagger): **`http://localhost:8080/api/docs`**.
 | POST | `/api/replication/sync` | Fuerza la reconciliación (por tabla en `tables`) | admin | 200 |
 | GET | `/api/monitoring/local?window=300` | Métricas y eventos de **este** nodo (ventana 60–900 s) | admin | 200, 401, 403 |
 | GET | `/api/monitoring/cluster?window=300` | Vista agregada: nodos (vía REST), gateway, bases y eventos | admin | 200, 401, 403 |
+| GET | `/api/admin/summary` | Totales de usuarios, pedidos (por estado y eliminados) y auditoría | admin | 200 |
+| GET | `/api/admin/users?search=&role=&status=` | Usuarios con su número de pedidos (`status`: active, inactive, deleted) | admin | 200 |
+| PATCH | `/api/admin/users/{id}` | Editar `full_name`, `role`, `is_active` | admin | 200, 404, 409 (sobre sí mismo), 422 |
+| POST | `/api/admin/users/{id}/reset-password` | Restablecer contraseña (`{new_password}`) | admin | 200, 404, 422 |
+| DELETE | `/api/admin/users/{id}?orders=keep\|delete` | Eliminar (anonimizar) la cuenta, conservando o eliminando sus pedidos | admin | 200, 404, 409 |
+| GET | `/api/admin/orders?include_deleted=&status=&owner_id=&search=` | Todos los pedidos, opcionalmente con los eliminados | admin | 200 |
+| PATCH | `/api/admin/orders/{id}` | Corrección administrativa (cualquier campo y estado) | admin | 200, 404, 409 (eliminado), 422 |
+| POST | `/api/admin/orders/{id}/restore` | Restaurar un pedido eliminado | admin | 200, 404, 409 |
+| GET | `/api/admin/audit?entity=&entity_id=&actor=&limit=` | Registro de auditoría, más reciente primero | admin | 200 |
 
 Las rutas con sesión requieren `Authorization: Bearer <access_token>`. En Swagger (`/api/docs`) se usa
 el botón **Authorize**.
@@ -716,7 +810,7 @@ Ejemplo — transición inválida (`pendiente → enviado`, como admin):
 
 ---
 
-## 12. Ejemplo de fallo simulado paso a paso
+## 13. Ejemplo de fallo simulado paso a paso
 
 Salidas **reales** obtenidas contra el clúster local (`BASE=http://localhost:8080`) con la versión 1.0.
 Desde la 1.1 los endpoints de pedidos y de caos exigen sesión de administrador; basta con añadir el token
@@ -827,7 +921,7 @@ El mismo comportamiento se verificó con **fallos reales** (`docker compose stop
 
 ---
 
-## 13. Tecnologías empleadas y justificación
+## 14. Tecnologías empleadas y justificación
 
 | Tecnología | Versión | Uso | Justificación |
 |------------|---------|-----|---------------|
@@ -848,7 +942,7 @@ El mismo comportamiento se verificó con **fallos reales** (`docker compose stop
 
 ---
 
-## 14. Variables de entorno
+## 15. Variables de entorno
 
 | Variable | Dónde | Valor por defecto | Descripción |
 |----------|-------|-------------------|-------------|
@@ -874,7 +968,7 @@ El mismo comportamiento se verificó con **fallos reales** (`docker compose stop
 
 ---
 
-## 15. Decisiones de diseño, limitaciones y trabajo futuro
+## 16. Decisiones de diseño, limitaciones y trabajo futuro
 
 **Decisiones:**
 
@@ -898,6 +992,9 @@ El mismo comportamiento se verificó con **fallos reales** (`docker compose stop
   cual es adecuado para el volumen del proyecto pero no para millones de filas.
 - El gateway es un punto único de fallo (en producción: dos NGINX con IP virtual o el balanceador de la
   plataforma, p. ej. Traefik en Coolify).
+- La auditoría conserva el nombre de usuario de las cuentas eliminadas en su descripción (para saber a
+  quién afectó el cambio); el resto de sus datos personales se anonimiza. No hay purga de la auditoría.
+- La corrección administrativa permite saltarse la máquina de estados: es intencional y queda auditada.
 - Las métricas del monitoreo viven en memoria: se reinician con el nodo y cubren 15 minutos. No hay
   alertas automáticas (el siguiente paso sería exportarlas a Prometheus/Grafana).
 - El límite de intentos de login es por nodo (en memoria): con 2 nodos el atacante tiene el doble de
@@ -907,5 +1004,5 @@ El mismo comportamiento se verificó con **fallos reales** (`docker compose stop
 - Si la réplica cae de verdad mientras la primaria está "caída" por simulación, no se puede validar a
   ningún usuario y la orden de restaurar debe darse reiniciando los nodos.
 
-**Trabajo futuro:** panel de administración de datos (usuarios y pedidos), notificaciones en tiempo real con WebSockets, cola de mensajes para la replicación (outbox), *streaming replication* con promoción
+**Trabajo futuro:** notificaciones en tiempo real con WebSockets, cola de mensajes para la replicación (outbox), *streaming replication* con promoción
 automática, purga de *tombstones* y métricas (Prometheus/Grafana).

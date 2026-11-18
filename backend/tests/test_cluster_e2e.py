@@ -158,3 +158,29 @@ def test_e2e_monitoreo_agrega_ambos_nodos_y_el_gateway(http):
         except httpx.HTTPError:
             exposed = False
     assert exposed is False
+
+
+def test_e2e_administracion_revoca_sesiones_en_ambos_nodos_y_audita(http):
+    username = f"e2e_admin_{uuid.uuid4().hex[:6]}"
+    registered = http.post(
+        "/api/auth/register",
+        json={"username": username, "full_name": "Cliente Revocable", "password": "ClienteE2E1"},
+        headers={"Authorization": ""},
+    ).json()
+    user_id = registered["user"]["id"]
+    user_headers = {"Authorization": f"Bearer {registered['access_token']}"}
+    assert http.get("/api/orders", headers=user_headers).status_code == 200
+
+    off = http.patch(f"/api/admin/users/{user_id}", json={"is_active": False})
+    assert off.status_code == 200 and off.json()["replication"] == "synced"
+    # Ningún nodo acepta ya su token: la sesión se revoca sin estado compartido entre nodos.
+    seen = set()
+    for _ in range(4):
+        response = http.get("/api/orders", headers=user_headers)
+        assert response.status_code == 401
+        seen.add(response.headers["X-Handled-By-Node"])
+    assert seen == NODES
+
+    actions = [e["action"] for e in http.get("/api/admin/audit", params={"entity_id": user_id}).json()["data"]]
+    assert actions == ["user.deactivate", "user.register"]
+    assert http.delete(f"/api/admin/users/{user_id}", params={"orders": "delete"}).status_code == 200

@@ -40,6 +40,25 @@ CREATE TABLE IF NOT EXISTS users (
 
 CREATE INDEX IF NOT EXISTS ix_users_updated_at ON users (updated_at);
 
+-- Auditoría (también replicada): quién cambió qué, cuándo y en qué nodo. Sólo se agregan filas.
+CREATE TABLE IF NOT EXISTS audit_log (
+    id             VARCHAR(36)  PRIMARY KEY,
+    created_at     TIMESTAMPTZ  NOT NULL,
+    updated_at     TIMESTAMPTZ  NOT NULL,                     -- = created_at (para last-write-wins)
+    actor_id       VARCHAR(36)  NULL,
+    actor_username VARCHAR(50)  NOT NULL,
+    action         VARCHAR(40)  NOT NULL,                     -- p. ej. order.status, user.role, user.delete
+    entity         VARCHAR(20)  NOT NULL,                     -- order | user
+    entity_id      VARCHAR(36)  NOT NULL,
+    summary        VARCHAR(300) NOT NULL,
+    changes        JSONB        NULL,                         -- {campo: [antes, después]}
+    node           VARCHAR(50)  NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS ix_audit_log_created_at ON audit_log (created_at);
+CREATE INDEX IF NOT EXISTS ix_audit_log_entity ON audit_log (entity, entity_id);
+CREATE INDEX IF NOT EXISTS ix_audit_log_updated_at ON audit_log (updated_at);
+
 -- Pedidos de ejemplo. IDs y fechas FIJOS para que primaria y réplica sean idénticas.
 INSERT INTO orders (id, customer_name, items, total, status, created_at, updated_at, deleted_at, handled_by_node)
 VALUES

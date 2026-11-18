@@ -104,11 +104,40 @@ class User(Base):
     )
 
 
+class AuditEntry(Base):
+    """Registro de auditoría: quién cambió qué, cuándo y en qué nodo. Sólo se agrega (nunca se edita).
+
+    Se escribe en la MISMA transacción que el cambio que describe y se replica como las demás tablas,
+    así que no puede existir un cambio sin su registro ni perderse si cae db-primary.
+    """
+
+    __tablename__ = "audit_log"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)  # = created_at (LWW)
+    actor_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    actor_username: Mapped[str] = mapped_column(String(50), nullable=False)
+    action: Mapped[str] = mapped_column(String(40), nullable=False)
+    entity: Mapped[str] = mapped_column(String(20), nullable=False)
+    entity_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    summary: Mapped[str] = mapped_column(String(300), nullable=False)
+    changes: Mapped[dict | None] = mapped_column(JSON().with_variant(JSONB(), "postgresql"), nullable=True)
+    node: Mapped[str] = mapped_column(String(50), nullable=False)
+
+    __table_args__ = (
+        Index("ix_audit_log_created_at", "created_at"),
+        Index("ix_audit_log_entity", "entity", "entity_id"),
+        Index("ix_audit_log_updated_at", "updated_at"),
+    )
+
+
 ORDER_COLUMNS: tuple[str, ...] = tuple(column.name for column in Order.__table__.columns)
 USER_COLUMNS: tuple[str, ...] = tuple(column.name for column in User.__table__.columns)
+AUDIT_COLUMNS: tuple[str, ...] = tuple(column.name for column in AuditEntry.__table__.columns)
 
-# Tablas que se replican entre db-primary y db-replica (todas con id, updated_at y deleted_at).
-REPLICATED_TABLES = (Order.__table__, User.__table__)
+# Tablas que se replican entre db-primary y db-replica (todas con id y updated_at para last-write-wins).
+REPLICATED_TABLES = (Order.__table__, User.__table__, AuditEntry.__table__)
 
 # Migraciones aditivas para bases creadas con versiones anteriores del esquema.
 SCHEMA_MIGRATIONS: tuple[tuple[str, str, str], ...] = (
