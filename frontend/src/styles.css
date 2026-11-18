@@ -11,10 +11,13 @@
   --brand-strong: #115e59;
   --brand-soft: #ccfbf1;
 
+  /* Identidad de los nodos (validada con el script de daltonismo del skill dataviz:
+     azul/naranja ΔE 29.9 en deuteranopía; el par azul/violeta anterior daba 0.4). */
   --alpha: #2563eb;
   --alpha-soft: #dbeafe;
-  --beta: #7c3aed;
-  --beta-soft: #ede9fe;
+  --beta: #eb6834; /* trazo de serie en gráficos */
+  --beta-ink: #c2410c; /* texto y rellenos con texto blanco (contraste ≥ 4.5:1) */
+  --beta-soft: #ffedd5;
 
   --ok: #15803d;
   --ok-soft: #dcfce7;
@@ -250,7 +253,7 @@ input {
 
 .node-chip.tone-beta {
   background: var(--beta-soft);
-  color: var(--beta);
+  color: var(--beta-ink);
 }
 
 .node-chip--large {
@@ -453,7 +456,7 @@ input {
 }
 
 .balance-cell.tone-beta {
-  background: var(--beta);
+  background: var(--beta-ink);
 }
 
 .balance-cell.tone-fail {
@@ -1111,10 +1114,322 @@ tbody tr:hover td {
   margin: 0 0 14px;
 }
 
+/* ------------------------------------------------------------------ pestañas (admin) */
+.tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: -6px;
+}
+
+.tab {
+  border: none;
+  background: transparent;
+  padding: 10px 16px;
+  font-weight: 600;
+  color: var(--muted);
+  border-bottom: 3px solid transparent;
+  cursor: pointer;
+}
+
+.tab:hover {
+  color: var(--text);
+}
+
+.tab.active {
+  color: var(--brand-strong);
+  border-bottom-color: var(--brand);
+}
+
+/* ------------------------------------------------------------------ monitoreo */
+.monitoring {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  transition: opacity 0.2s;
+}
+
+.monitoring .section-head {
+  margin-bottom: 0;
+}
+
+.filter-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.stat-row {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.stat-tile {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  box-shadow: var(--shadow);
+}
+
+.stat-label {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.stat-value {
+  font-size: 1.6rem;
+  font-weight: 600;
+  color: var(--text);
+  line-height: 1.15;
+}
+
+.stat-hint {
+  font-size: 0.78rem;
+}
+
+.stat-ok {
+  color: var(--ok);
+}
+
+.stat-warn {
+  color: var(--warn);
+}
+
+.pill-warn {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.charts-grid,
+.infra-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.nodes-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 16px;
+}
+
+.chart-card .card-head {
+  align-items: flex-start;
+  margin-bottom: 6px;
+}
+
+.chart-subtitle {
+  margin: 2px 0 0;
+}
+
+.chart-legend {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  font-size: 0.82rem;
+  color: var(--text-2);
+  margin-bottom: 4px;
+}
+
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.chart-body {
+  position: relative;
+  min-height: 230px;
+}
+
+.chart-svg {
+  display: block;
+  overflow: visible;
+}
+
+.chart-svg:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+.chart-grid {
+  stroke: #e2e8f0;
+  stroke-width: 1;
+  shape-rendering: crispEdges;
+}
+
+.chart-tick {
+  fill: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.chart-end-label {
+  fill: var(--text-2);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.chart-crosshair {
+  stroke: var(--border-strong);
+  stroke-width: 1;
+  shape-rendering: crispEdges;
+}
+
+.chart-tooltip {
+  position: absolute;
+  pointer-events: none;
+  min-width: 166px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.12);
+  padding: 8px 10px;
+  font-size: 0.82rem;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.tt-time {
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.tt-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tt-row strong {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.chart-table {
+  max-height: 230px;
+  overflow-y: auto;
+}
+
+.chart-table th {
+  position: sticky;
+  top: 0;
+}
+
+.chart-foot {
+  margin: 6px 0 0;
+}
+
+.node-card {
+  border-left: 4px solid var(--ok);
+}
+
+.node-card.tile-crash {
+  border-left-color: var(--danger);
+}
+
+.node-card.tile-down {
+  border-left-color: #64748b;
+}
+
+.node-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 16px;
+  margin: 0;
+}
+
+.metric dt {
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.metric dd {
+  margin: 2px 0 0;
+  font-weight: 600;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.node-card-error {
+  margin: 12px 0 0;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.node-card-history {
+  margin: 12px 0 0;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--muted);
+}
+
+.events-filter {
+  margin-bottom: 12px;
+}
+
+.events-wrap {
+  max-height: 380px;
+  overflow-y: auto;
+}
+
+.events-table th {
+  position: sticky;
+  top: 0;
+}
+
+.event-message {
+  font-size: 0.84rem;
+  color: var(--text-2);
+  min-width: 320px;
+}
+
+.level {
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.level-warning {
+  color: var(--warn);
+}
+
+.level-error,
+.level-critical {
+  color: var(--danger);
+}
+
+.level-info {
+  color: var(--muted);
+}
+
 /* ------------------------------------------------------------------ responsive */
 @media (max-width: 1280px) {
   .cluster-grid {
     grid-template-columns: 1fr 1fr;
+  }
+
+  .stat-row {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .last-request {
@@ -1138,6 +1453,15 @@ tbody tr:hover td {
 
   .cluster-grid--client {
     grid-template-columns: 1fr;
+  }
+
+  .charts-grid,
+  .infra-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .stat-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .order-form {

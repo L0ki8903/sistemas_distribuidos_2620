@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -14,10 +15,12 @@ from . import __version__
 from .chaos import ChaosState
 from .config import Settings
 from .database import DatabaseCluster, DatabaseUnavailableError, describe_error
+from .metrics import EventLogHandler, NodeMetrics
 from .bootstrap import bootstrap_admin
-from .peers import PeerClient
+from .peers import FORWARDED_HEADER, PeerClient
 from .routers import auth as auth_router
 from .routers import chaos as chaos_router
+from .routers import monitoring as monitoring_router
 from .routers import orders as orders_router
 from .routers import system as system_router
 from .security import AuthenticationError, LoginRateLimiter, PermissionDeniedError, TooManyAttemptsError
@@ -61,9 +64,13 @@ def create_app(settings: Settings | None = None, peer_client: PeerClient | None 
     cluster = DatabaseCluster(settings, chaos)
     peers = peer_client or PeerClient(settings.peers, settings.peer_timeout_seconds)
     rate_limiter = LoginRateLimiter(settings.login_max_failures, settings.login_window_seconds)
+    metrics = NodeMetrics(settings.node_id)
+    event_handler = EventLogHandler(metrics)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        # Los eventos (FAILOVER, CHAOS, SYNC, AUTH…) se capturan desde el arranque.
+        logging.getLogger("pedidos").addHandler(event_handler)
         await asyncio.to_thread(cluster.ensure_schema)
         await asyncio.to_thread(bootstrap_admin, cluster, settings)
         if settings.jwt_secret_is_weak:
@@ -85,6 +92,7 @@ def create_app(settings: Settings | None = None, peer_client: PeerClient | None 
                 await task
         peers.close()
         cluster.dispose()
+        logging.getLogger("pedidos").removeHandler(event_handler)
 
     app = FastAPI(
         title="Sistema Distribuido de Gestión de Pedidos",
@@ -103,11 +111,14 @@ def create_app(settings: Settings | None = None, peer_client: PeerClient | None 
     app.state.cluster = cluster
     app.state.peers = peers
     app.state.rate_limiter = rate_limiter
+    app.state.metrics = metrics
 
     @app.middleware("http")
     async def node_identity_and_chaos(request: Request, call_next):
-        """Añade ``X-Handled-By-Node`` y, si SIMULATE_CRASH está activo, responde 503 en /api/orders*."""
-        if chaos.simulate_crash and request.url.path.startswith(CRASH_PROTECTED_PREFIX):
+        """Añade ``X-Handled-By-Node``, aplica SIMULATE_CRASH (503 en /api/orders*) y mide la petición."""
+        started = time.perf_counter()
+        crashed = chaos.simulate_crash and request.url.path.startswith(CRASH_PROTECTED_PREFIX)
+        if crashed:
             response = JSONResponse(
                 status_code=503,
                 content={
@@ -120,6 +131,14 @@ def create_app(settings: Settings | None = None, peer_client: PeerClient | None 
         else:
             response = await call_next(request)
         response.headers["X-Handled-By-Node"] = settings.node_id
+        if FORWARDED_HEADER not in request.headers:  # el tráfico interno entre nodos no cuenta
+            metrics.record_request(
+                request.url.path,
+                response.status_code,
+                (time.perf_counter() - started) * 1000,
+                db_used=response.headers.get("X-DB-Used"),
+                simulated_crash=crashed,
+            )
         return response
 
     def _error(status_code: int, detail: str, **extra) -> JSONResponse:
@@ -179,6 +198,7 @@ def create_app(settings: Settings | None = None, peer_client: PeerClient | None 
     app.include_router(auth_router.router)
     app.include_router(orders_router.router)
     app.include_router(chaos_router.router)
+    app.include_router(monitoring_router.router)
     return app
 
 

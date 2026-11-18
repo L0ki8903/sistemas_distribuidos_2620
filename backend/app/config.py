@@ -77,6 +77,8 @@ class Settings:
     password_hash_iterations: int = 600_000  # PBKDF2-SHA256 (recomendación OWASP)
     login_max_failures: int = 5
     login_window_seconds: int = 300
+    # URL interna del stub_status de NGINX (p. ej. http://gateway:8081/nginx_status); vacío = no se consulta.
+    gateway_status_url: str | None = None
 
     @property
     def jwt_secret_is_weak(self) -> bool:
@@ -96,6 +98,7 @@ class Settings:
             ),
             login_max_failures=int(_env_float("LOGIN_MAX_FAILURES", defaults.login_max_failures)),
             login_window_seconds=int(_env_float("LOGIN_WINDOW_SECONDS", defaults.login_window_seconds)),
+            gateway_status_url=os.getenv("GATEWAY_STATUS_URL") or None,
             node_id=os.getenv("NODE_ID", defaults.node_id),
             primary_db_url=os.getenv("PRIMARY_DB_URL") or defaults.primary_db_url,
             replica_db_url=os.getenv("REPLICA_DB_URL") or defaults.replica_db_url,

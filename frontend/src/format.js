@@ -23,11 +23,32 @@ export function formatClock(value) {
   return new Date(value).toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
+const integer = new Intl.NumberFormat("es-CO", { maximumFractionDigits: 0 });
+
+export function formatNumber(value) {
+  return value == null ? "—" : integer.format(value);
+}
+
+export function formatPercent(fraction) {
+  if (fraction == null) return "—";
+  return `${(fraction * 100).toLocaleString("es-CO", { maximumFractionDigits: 1 })} %`;
+}
+
+export function formatDuration(seconds) {
+  if (seconds == null) return "—";
+  const s = Math.floor(seconds);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  if (h > 0) return `${h} h ${String(m).padStart(2, "0")} min`;
+  if (m > 0) return `${m} min ${String(s % 60).padStart(2, "0")} s`;
+  return `${s} s`;
+}
+
 export function shortId(id) {
   return id ? id.slice(0, 8) : "—";
 }
 
-/** Tono visual estable por nodo (Alpha = azul, Beta = violeta). */
+/** Tono visual estable por nodo (Alpha = azul, Beta = naranja; par validado para daltonismo). */
 export function nodeTone(node) {
   if (!node) return "unknown";
   if (/alpha/i.test(node)) return "alpha";

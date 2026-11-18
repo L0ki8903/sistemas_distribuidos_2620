@@ -65,6 +65,8 @@ services:
       ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
       ALLOW_REGISTRATION: ${ALLOW_REGISTRATION:-true}
+      # Monitoreo: estado del gateway (puerto interno del contenedor NGINX, no publicado).
+      GATEWAY_STATUS_URL: http://gateway:8081/nginx_status
     depends_on:
       db-primary:
         condition: service_healthy
@@ -91,6 +93,8 @@ services:
       ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
       ALLOW_REGISTRATION: ${ALLOW_REGISTRATION:-true}
+      # Monitoreo: estado del gateway (puerto interno del contenedor NGINX, no publicado).
+      GATEWAY_STATUS_URL: http://gateway:8081/nginx_status
     depends_on:
       db-primary:
         condition: service_healthy

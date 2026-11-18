@@ -115,4 +115,5 @@ export const api = {
     request("PUT", `/api/chaos/crash/${encodeURIComponent(node)}`, { body: { enabled } }),
   setDbPrimaryDown: (enabled) => request("PUT", "/api/chaos/db-primary", { body: { enabled } }),
   syncReplication: () => request("POST", "/api/replication/sync"),
+  monitoringCluster: (window = 300) => request("GET", `/api/monitoring/cluster?window=${window}`, { silent: true }),
 };

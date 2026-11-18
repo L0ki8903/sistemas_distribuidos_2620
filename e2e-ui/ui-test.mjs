@@ -284,6 +284,40 @@ try {
   check("Panel indica 'Réplica en sincronía'", true);
   await shot("07_reconciliacion.png", ".cluster");
 
+  // ------------------------------------------------------------------ monitoreo (admin)
+  await clickButton("Monitoreo", ".tabs");
+  await page.waitForFunction(() => document.querySelectorAll(".node-card").length >= 2, { timeout: 15000 });
+  await sleep(3500); // un ciclo de actualización
+  const nodeCards = await page.$$eval(".node-card", (els) => els.map((e) => e.textContent));
+  check(
+    "Monitoreo: tarjeta por nodo, ambos operativos",
+    nodeCards.length === 2 && nodeCards.every((t) => t.includes("Operativo")),
+    `${nodeCards.length} tarjetas`,
+  );
+  const statTiles = await page.$$eval(".stat-tile", (els) => els.map((e) => e.textContent));
+  check("Monitoreo: indicadores del clúster (2 / 2 nodos)", statTiles.length === 6 && statTiles[0].includes("2 / 2"), statTiles[0]);
+  const linePaths = await page.$$eval(".chart-svg path", (els) => els.filter((p) => (p.getAttribute("d") || "").length > 10).length);
+  check("Monitoreo: gráficos con una línea por nodo", linePaths >= 3, `${linePaths} trazos`);
+  const svgBox = await (await page.$(".chart-svg")).boundingBox();
+  await page.mouse.move(svgBox.x + svgBox.width - 80, svgBox.y + svgBox.height / 2);
+  await page.waitForSelector(".chart-tooltip", { timeout: 5000 });
+  check("Monitoreo: el tooltip de la cruz de lectura muestra ambos nodos", (await page.$$(".chart-tooltip .tt-row")).length === 2);
+  await page.mouse.move(0, 0);
+  const eventKinds = await page.$$eval(".events-table .level", (els) => els.map((e) => e.textContent));
+  check(
+    "Monitoreo: eventos de caos y de failover de BD",
+    eventKinds.some((k) => k.includes("Caos")) && eventKinds.some((k) => k.includes("Failover BD")),
+    `${eventKinds.length} eventos`,
+  );
+  check("Monitoreo: el gateway reporta conexiones", (await text(".infra-grid .card:first-child .metrics-grid")).includes("Conexiones activas"));
+  await shot("11_monitoreo.png");
+  await clickButton("Ver tabla", ".chart-card");
+  const tableRows = await page.$$eval(".chart-table tbody tr", (rows) => rows.length);
+  check("Monitoreo: cada gráfico tiene vista de tabla", tableRows >= 30, `${tableRows} filas`);
+  await clickButton("Ver gráfico", ".chart-card");
+  await clickButton("Operación", ".tabs");
+  await page.waitForSelector(".order-form");
+
   // ------------------------------------------------------------------ filtros, búsqueda y eliminación
   await clickButton("En proceso", ".chips");
   await sleep(300);

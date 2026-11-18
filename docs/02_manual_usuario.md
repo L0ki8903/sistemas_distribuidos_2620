@@ -157,7 +157,7 @@ La pantalla tiene cuatro zonas:
 ![Panel de estado del clúster en condiciones normales](img/03_estado_cluster_normal.png)
 
 - **Última petición:** muestra el **nodo que respondió** (`Nodo-Alpha-01` en azul o `Nodo-Beta-02` en
-  violeta), la **base de datos usada** (`Primary` en verde o `Replica Failover` en ámbar), la operación,
+  naranja), la **base de datos usada** (`Primary` en verde o `Replica Failover` en ámbar), la operación,
   el código HTTP y el tiempo de respuesta. Si hubo un fallo y el sistema lo resolvió, aparece un aviso
   explicativo.
 - **Nodos backend:** una tarjeta por servidor con su estado (`Operativo`, `Caída simulada (503)` o
@@ -179,6 +179,25 @@ Cada fila es una petición hecha desde la interfaz: hora, operación, código HT
 y el gateway reintentó automáticamente en el otro: **el usuario no vio ningún error**.
 
 ---
+
+### 5.3 Panel de monitoreo (administrador)
+
+![Panel de monitoreo de nodos](img/11_monitoreo.png)
+
+La pestaña **Monitoreo** (junto a **Operación**, bajo la barra superior) muestra la salud de todo el
+sistema. Se actualiza sola cada 3 segundos; **Pausar actualización** congela la vista.
+
+| Zona | Qué muestra |
+|------|-------------|
+| **Rango** | Últimos 5 o 15 minutos: se aplica a todos los indicadores y gráficos |
+| **Indicadores** | Nodos operativos, peticiones por minuto, % de errores 5xx, latencia p95 (nodo más lento), peticiones atendidas por la réplica y failovers de BD |
+| **Gráficos** | Peticiones y latencia media de cada nodo cada 10 s (azul = Alpha, naranja = Beta). Al pasar el ratón aparece el valor de ambos nodos en ese instante; **Ver tabla** muestra los mismos datos en una tabla |
+| **Tarjetas de nodo** | Estado, tiempo en línea, peticiones, latencia, errores, 503 simulados, lecturas desde la réplica, circuit breaker y último error de la BD primaria (en rojo sólo si sigue activo) |
+| **Gateway NGINX** | Conexiones activas y peticiones atendidas por el balanceador |
+| **Bases de datos** | Estado de cada base, filas de pedidos y usuarios, si están en sincronía y la última reconciliación |
+| **Eventos del clúster** | Lo que ocurrió en cada nodo (caídas simuladas, failovers, reconciliaciones, logins fallidos…), con filtros. Los eventos repetidos se agrupan (`×9`) |
+
+Un nodo apagado aparece como **Inalcanzable**: el resto del panel sigue funcionando.
 
 ## 6. Gestión de pedidos
 
@@ -277,7 +296,14 @@ Guion sugerido para una presentación (≈ 5 minutos), con la sesión iniciada c
 Con un cliente conectado en otra ventana, simular la caída de cualquiera de los dos nodos: el cliente
 sigue trabajando sin volver a iniciar sesión, porque su sesión es válida en ambos servidores.
 
-### 7.6 Fallos reales (opcional, desde la terminal)
+### 7.6 Ver la demo en el panel de Monitoreo
+
+Tras las caídas anteriores, abrir la pestaña **Monitoreo**: los gráficos muestran cómo Beta absorbió
+todo el tráfico mientras Alpha estaba caído, el indicador **Atendidas por la réplica** sube durante la
+caída de la BD primaria y la lista de **eventos** registra cada paso (Caos, Failover BD,
+Reconciliación).
+
+### 7.7 Fallos reales (opcional, desde la terminal)
 
 Además de la simulación, se pueden apagar contenedores de verdad:
 

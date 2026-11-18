@@ -1,6 +1,6 @@
 # Informe de Pruebas — Sistema Distribuido de Gestión de Pedidos Tolerante a Fallos
 
-> Versión 1.1 (autenticación y seguridad) · Ejecución: 18 de noviembre de 2026 · Todas las salidas de este documento son **literales**
+> Versión 1.2 (autenticación, seguridad y monitoreo) · Ejecución: 18 de noviembre de 2026 · Todas las salidas de este documento son **literales**
 > de las ejecuciones reales (no editadas salvo recortes señalados con `…`).
 
 ## Contenido
@@ -32,11 +32,13 @@ Verificar que el sistema:
 5. Ofrece una interfaz que refleja todo lo anterior y permite provocarlo.
 6. **Protege el acceso**: sesión con JWT válida en cualquier nodo, roles `user`/`admin`, contraseñas con
    hash, bloqueo por intentos fallidos y autorización aplicada en el servidor, sin perder la tolerancia a fallos.
+7. **Permite observarlo**: panel de monitoreo con métricas y eventos de cada nodo, del gateway y de las
+   bases, que sigue funcionando aunque un nodo no responda.
 
 Requisito mínimo del curso: 3 pruebas unitarias/integración + 1 de fallo. Requisito del proyecto:
 5 pruebas en `backend/tests/test_orders.py` (crear, actualizar estado, eliminar, fallo de nodo 503,
-failover de BD). **Se implementaron 28 pruebas pytest (15 de pedidos/fallos + 13 de seguridad) + 5 e2e +
-8 verificaciones manuales de clúster + 37 de interfaz.**
+failover de BD). **Se implementaron 36 pruebas pytest (15 de pedidos/fallos + 13 de seguridad + 8 de
+monitoreo) + 6 e2e + 8 verificaciones manuales de clúster + 44 de interfaz.**
 
 ---
 
@@ -61,6 +63,7 @@ failover de BD). **Se implementaron 28 pruebas pytest (15 de pedidos/fallos + 13
 | Unitarias / API | pytest + `TestClient` | Reglas de negocio, máquina de estados, validaciones, escritura dual, failover, circuit breaker, reconciliación, middleware de caos, comunicación entre nodos (2 apps en el mismo proceso) | `python -m pytest -v` (SQLite) |
 | Integración con PostgreSQL | pytest + PostgreSQL 16 real | Lo mismo con el dialecto real: `JSONB`, `TIMESTAMPTZ`, `ON CONFLICT`, `FOR UPDATE` | `TEST_PRIMARY_DB_URL=… TEST_REPLICA_DB_URL=… python -m pytest tests/test_orders.py` |
 | End-to-end del clúster | pytest + httpx contra NGINX | Round-Robin real, failover de nodo transparente, failover de BD y reconciliación entre contenedores, servicio del frontend | `CLUSTER_BASE_URL=http://localhost:8080 python -m pytest tests/test_cluster_e2e.py` |
+| Monitoreo | pytest + `TestClient` + `httpx.MockTransport` | Conteo por estado y latencia, exclusión del propio sondeo, 503 simulados y lecturas desde la réplica, eventos (con la contraseña oculta), vista agregada con un nodo inalcanzable, `stub_status` y series alineadas | `python -m pytest tests/test_monitoring.py` |
 | Seguridad | pytest + `TestClient` | Registro/login, JWT ausente/falso/expirado/de otro secreto, roles, propiedad de pedidos, bloqueo por intentos, admin inicial, CLI, sesión con la primaria caída y entre nodos | `python -m pytest tests/test_auth.py` |
 | Fallos reales | `curl` + `docker compose stop/start` | Comportamiento ante caídas **no simuladas** de un nodo y de la primaria | Pasos del comando `/verify-cluster` |
 | Interfaz | Chrome headless + puppeteer-core | Login, roles, botones y formularios funcionan y la UI refleja nodo/BD/failover | `cd e2e-ui && node ui-test.mjs` |
@@ -75,7 +78,7 @@ detenidos en el clúster).
 
 ### 4.1 `backend/tests/test_orders.py` (unitarias, integración y fallo)
 
-Se ejecutan con sesión de administrador (fixture `client`); los permisos por rol están en §4.2.
+Se ejecutan con sesión de administrador (fixture `client`); los permisos por rol están en §4.2; los de monitoreo, en §4.3.
 
 | ID | Tipo | Test | Descripción | Resultado esperado | Resultado obtenido |
 |----|------|------|-------------|--------------------|--------------------|
@@ -113,17 +116,31 @@ Se ejecutan con sesión de administrador (fixture `client`); los permisos por ro
 | S-12 | Unitaria | `test_cli_crea_o_restablece_un_administrador` | `python -m app.cli create-admin` crea un admin, rechaza contraseñas débiles y restablece la contraseña | ✅ PASSED |
 | S-13 | Distribuida | `test_comunicacion_entre_nodos_reenvia_la_autorizacion` | Un `user` no puede ordenar caos (403); el admin sí y el reenvío REST al otro nodo lleva su token | ✅ PASSED |
 
-### 4.3 `backend/tests/test_cluster_e2e.py` (end-to-end contra NGINX + Docker)
+### 4.3 `backend/tests/test_monitoring.py` (monitoreo de nodos)
+
+| ID | Tipo | Test | Resultado esperado | Resultado obtenido |
+|----|------|------|--------------------|--------------------|
+| M-01 | Autorización | `test_monitoreo_es_solo_para_administradores` | `/local` y `/cluster`: 401 sin sesión, 403 con rol `user`, 200 con admin | ✅ PASSED |
+| M-02 | Unitaria | `test_metricas_cuentan_peticiones_por_estado_y_latencia` | 6 peticiones → 4 correctas y 2 de cliente (404, 422); p50 ≤ p95 ≤ máx; 30 cubos de 10 s en 300 s | ✅ PASSED |
+| M-03 | Unitaria | `test_las_consultas_de_monitoreo_y_salud_no_inflan_las_metricas` | Consultar `/api/health` y el propio panel no cambia el contador de tráfico | ✅ PASSED |
+| M-04 | Fallo | `test_caidas_simuladas_lecturas_desde_replica_y_eventos` | 1 `503` simulado contado; 3 lecturas servidas por la réplica; eventos `chaos`, `failover` y `lifecycle`; repetidos agrupados (×N) | ✅ PASSED |
+| M-05 | Seguridad | `test_eventos_de_seguridad_y_contrasena_generada_oculta` | El evento del admin inicial muestra `[oculta]` en lugar de la contraseña; el login fallido aparece como evento `auth` | ✅ PASSED |
+| M-06 | Distribuida | `test_vista_de_cluster_agrega_nodos_por_rest_y_marca_los_inalcanzables` | Alpha lee a Beta por REST; un tercer nodo caído aparece `reachable: false` con el motivo; el resumen suma sólo los alcanzables | ✅ PASSED |
+| M-07 | Unitaria | `test_estado_del_gateway_desde_stub_status_de_nginx` | Se interpreta el texto de `stub_status`; un 502 del gateway se informa como no alcanzable; sin URL → `configured: false` | ✅ PASSED |
+| M-08 | Unitaria | `test_serie_temporal_alineada_y_percentiles` | Cubos alineados a múltiplos de 10 s; hueco (`null`) sin tráfico; p50 = 30 y p95 = 100 con datos conocidos | ✅ PASSED |
+
+### 4.4 `backend/tests/test_cluster_e2e.py` (end-to-end contra NGINX + Docker)
 
 | ID | Test | Resultado esperado | Resultado obtenido |
 |----|------|--------------------|--------------------|
+| E-06 | `test_e2e_monitoreo_agrega_ambos_nodos_y_el_gateway` | Ambos nodos alcanzables, `nodes_up = 2`, el gateway reporta peticiones y su puerto interno 8081 **no** responde desde fuera | ✅ PASSED |
 | E-05 | `test_e2e_sesion_valida_en_ambos_nodos_y_sin_reintentos_en_401` | Un mismo token es aceptado por ambos nodos a través de NGINX; sin sesión → 401 sin reintento (`X-Upstream-Status: 401`); cliente en caos → 403 | ✅ PASSED |
 | E-01 | `test_e2e_round_robin_alterna_entre_los_dos_nodos` | En 6 peticiones aparecen ambos nodos, al menos 2 veces cada uno | ✅ PASSED |
 | E-02 | `test_e2e_caida_de_nodo_es_transparente_para_el_cliente` | Con Alpha caído: 8/8 respuestas 200 desde Beta, `X-Upstream-Status` contiene 503; POST 201 | ✅ PASSED |
 | E-03 | `test_e2e_failover_de_bd_primaria_y_reconciliacion` | Propagación a 2 nodos; `replica_failover`; `in_sync` falso durante la caída y verdadero tras restaurar; lectura posterior desde `primary` | ✅ PASSED |
 | E-04 | `test_e2e_gateway_sirve_el_frontend_react` | `/` y rutas del SPA devuelven `index.html` (`try_files`) | ✅ PASSED |
 
-### 4.4 Verificaciones de clúster con fallos simulados y reales (`/verify-cluster`)
+### 4.5 Verificaciones de clúster con fallos simulados y reales (`/verify-cluster`)
 
 | ID | Verificación | Resultado |
 |----|--------------|-----------|
@@ -156,58 +173,68 @@ rootdir: /app
 configfile: pytest.ini
 testpaths: tests
 plugins: anyio-4.16.0
-collecting ... collected 33 items
+collecting ... collected 42 items
 
-tests/test_auth.py::test_registro_y_login_devuelven_token_y_el_usuario_se_replica PASSED [  3%]
-tests/test_auth.py::test_login_invalido_no_revela_si_el_usuario_existe PASSED [  6%]
-tests/test_auth.py::test_validaciones_de_registro_y_no_se_puede_auto_asignar_admin PASSED [  9%]
-tests/test_auth.py::test_endpoints_protegidos_rechazan_tokens_ausentes_falsos_o_expirados PASSED [ 12%]
-tests/test_auth.py::test_token_de_un_nodo_es_valido_en_el_otro_pero_no_con_otro_secreto PASSED [ 15%]
-tests/test_auth.py::test_usuario_desactivado_pierde_el_acceso_aunque_su_token_no_haya_expirado PASSED [ 18%]
-tests/test_auth.py::test_bloqueo_temporal_tras_varios_intentos_fallidos PASSED [ 21%]
-tests/test_auth.py::test_cliente_solo_ve_y_gestiona_sus_propios_pedidos PASSED [ 24%]
-tests/test_auth.py::test_cliente_no_accede_al_caos_ni_a_la_replicacion PASSED [ 27%]
-tests/test_auth.py::test_login_y_registro_funcionan_con_la_bd_primaria_caida PASSED [ 30%]
-tests/test_auth.py::test_admin_inicial_se_crea_una_sola_vez_y_con_contrasena_generada PASSED [ 33%]
-tests/test_auth.py::test_cli_crea_o_restablece_un_administrador PASSED   [ 36%]
-tests/test_auth.py::test_comunicacion_entre_nodos_reenvia_la_autorizacion PASSED [ 39%]
-tests/test_cluster_e2e.py::test_e2e_sesion_valida_en_ambos_nodos_y_sin_reintentos_en_401 SKIPPED [ 42%]
-tests/test_cluster_e2e.py::test_e2e_round_robin_alterna_entre_los_dos_nodos SKIPPED [ 45%]
-tests/test_cluster_e2e.py::test_e2e_caida_de_nodo_es_transparente_para_el_cliente SKIPPED [ 48%]
-tests/test_cluster_e2e.py::test_e2e_failover_de_bd_primaria_y_reconciliacion SKIPPED [ 51%]
-tests/test_cluster_e2e.py::test_e2e_gateway_sirve_el_frontend_react SKIPPED [ 54%]
-tests/test_orders.py::test_crear_pedido_se_escribe_en_primaria_y_se_replica PASSED [ 57%]
-tests/test_orders.py::test_actualizar_estado_recorre_todo_el_ciclo PASSED [ 60%]
-tests/test_orders.py::test_actualizar_estado_rechaza_transiciones_invalidas PASSED [ 63%]
-tests/test_orders.py::test_eliminar_pedido_con_borrado_logico_replicado PASSED [ 66%]
-tests/test_orders.py::test_fallo_de_nodo_devuelve_503_en_orders PASSED   [ 69%]
-tests/test_orders.py::test_failover_bd_primaria_a_replica_y_reconciliacion PASSED [ 72%]
-tests/test_orders.py::test_failover_cuando_la_primaria_es_inalcanzable_de_verdad PASSED [ 75%]
-tests/test_orders.py::test_si_caen_ambas_bd_responde_503_y_nunca_500 PASSED [ 78%]
-tests/test_orders.py::test_replica_caida_no_bloquea_escrituras_en_primaria PASSED [ 81%]
-tests/test_orders.py::test_listar_y_filtrar_por_estado_y_cliente PASSED  [ 84%]
-tests/test_orders.py::test_editar_pedido_recalcula_total_y_solo_si_esta_pendiente PASSED [ 87%]
-tests/test_orders.py::test_creacion_idempotente_con_id_generado_por_el_cliente PASSED [ 90%]
-tests/test_orders.py::test_validaciones_de_entrada PASSED                [ 93%]
-tests/test_orders.py::test_health_y_cabecera_x_handled_by_node PASSED    [ 96%]
+tests/test_auth.py::test_registro_y_login_devuelven_token_y_el_usuario_se_replica PASSED [  2%]
+tests/test_auth.py::test_login_invalido_no_revela_si_el_usuario_existe PASSED [  4%]
+tests/test_auth.py::test_validaciones_de_registro_y_no_se_puede_auto_asignar_admin PASSED [  7%]
+tests/test_auth.py::test_endpoints_protegidos_rechazan_tokens_ausentes_falsos_o_expirados PASSED [  9%]
+tests/test_auth.py::test_token_de_un_nodo_es_valido_en_el_otro_pero_no_con_otro_secreto PASSED [ 11%]
+tests/test_auth.py::test_usuario_desactivado_pierde_el_acceso_aunque_su_token_no_haya_expirado PASSED [ 14%]
+tests/test_auth.py::test_bloqueo_temporal_tras_varios_intentos_fallidos PASSED [ 16%]
+tests/test_auth.py::test_cliente_solo_ve_y_gestiona_sus_propios_pedidos PASSED [ 19%]
+tests/test_auth.py::test_cliente_no_accede_al_caos_ni_a_la_replicacion PASSED [ 21%]
+tests/test_auth.py::test_login_y_registro_funcionan_con_la_bd_primaria_caida PASSED [ 23%]
+tests/test_auth.py::test_admin_inicial_se_crea_una_sola_vez_y_con_contrasena_generada PASSED [ 26%]
+tests/test_auth.py::test_cli_crea_o_restablece_un_administrador PASSED   [ 28%]
+tests/test_auth.py::test_comunicacion_entre_nodos_reenvia_la_autorizacion PASSED [ 30%]
+tests/test_cluster_e2e.py::test_e2e_sesion_valida_en_ambos_nodos_y_sin_reintentos_en_401 SKIPPED [ 33%]
+tests/test_cluster_e2e.py::test_e2e_round_robin_alterna_entre_los_dos_nodos SKIPPED [ 35%]
+tests/test_cluster_e2e.py::test_e2e_caida_de_nodo_es_transparente_para_el_cliente SKIPPED [ 38%]
+tests/test_cluster_e2e.py::test_e2e_failover_de_bd_primaria_y_reconciliacion SKIPPED [ 40%]
+tests/test_cluster_e2e.py::test_e2e_gateway_sirve_el_frontend_react SKIPPED [ 42%]
+tests/test_cluster_e2e.py::test_e2e_monitoreo_agrega_ambos_nodos_y_el_gateway SKIPPED [ 45%]
+tests/test_monitoring.py::test_monitoreo_es_solo_para_administradores PASSED [ 47%]
+tests/test_monitoring.py::test_metricas_cuentan_peticiones_por_estado_y_latencia PASSED [ 50%]
+tests/test_monitoring.py::test_las_consultas_de_monitoreo_y_salud_no_inflan_las_metricas PASSED [ 52%]
+tests/test_monitoring.py::test_caidas_simuladas_lecturas_desde_replica_y_eventos PASSED [ 54%]
+tests/test_monitoring.py::test_eventos_de_seguridad_y_contrasena_generada_oculta PASSED [ 57%]
+tests/test_monitoring.py::test_vista_de_cluster_agrega_nodos_por_rest_y_marca_los_inalcanzables PASSED [ 59%]
+tests/test_monitoring.py::test_estado_del_gateway_desde_stub_status_de_nginx PASSED [ 61%]
+tests/test_monitoring.py::test_serie_temporal_alineada_y_percentiles PASSED [ 64%]
+tests/test_orders.py::test_crear_pedido_se_escribe_en_primaria_y_se_replica PASSED [ 66%]
+tests/test_orders.py::test_actualizar_estado_recorre_todo_el_ciclo PASSED [ 69%]
+tests/test_orders.py::test_actualizar_estado_rechaza_transiciones_invalidas PASSED [ 71%]
+tests/test_orders.py::test_eliminar_pedido_con_borrado_logico_replicado PASSED [ 73%]
+tests/test_orders.py::test_fallo_de_nodo_devuelve_503_en_orders PASSED   [ 76%]
+tests/test_orders.py::test_failover_bd_primaria_a_replica_y_reconciliacion PASSED [ 78%]
+tests/test_orders.py::test_failover_cuando_la_primaria_es_inalcanzable_de_verdad PASSED [ 80%]
+tests/test_orders.py::test_si_caen_ambas_bd_responde_503_y_nunca_500 PASSED [ 83%]
+tests/test_orders.py::test_replica_caida_no_bloquea_escrituras_en_primaria PASSED [ 85%]
+tests/test_orders.py::test_listar_y_filtrar_por_estado_y_cliente PASSED  [ 88%]
+tests/test_orders.py::test_editar_pedido_recalcula_total_y_solo_si_esta_pendiente PASSED [ 90%]
+tests/test_orders.py::test_creacion_idempotente_con_id_generado_por_el_cliente PASSED [ 92%]
+tests/test_orders.py::test_validaciones_de_entrada PASSED                [ 95%]
+tests/test_orders.py::test_health_y_cabecera_x_handled_by_node PASSED    [ 97%]
 tests/test_orders.py::test_comunicacion_entre_nodos_reenvia_caos_y_propaga_caida_de_bd PASSED [100%]
 
 ============================= slowest 5 durations ==============================
-0.37s call     tests/test_auth.py::test_cliente_solo_ve_y_gestiona_sus_propios_pedidos
-0.36s call     tests/test_auth.py::test_comunicacion_entre_nodos_reenvia_la_autorizacion
-0.35s call     tests/test_orders.py::test_comunicacion_entre_nodos_reenvia_caos_y_propaga_caida_de_bd
-0.33s setup    tests/test_orders.py::test_crear_pedido_se_escribe_en_primaria_y_se_replica
-0.31s setup    tests/test_orders.py::test_creacion_idempotente_con_id_generado_por_el_cliente
+0.41s call     tests/test_orders.py::test_comunicacion_entre_nodos_reenvia_caos_y_propaga_caida_de_bd
+0.32s call     tests/test_monitoring.py::test_vista_de_cluster_agrega_nodos_por_rest_y_marca_los_inalcanzables
+0.22s call     tests/test_auth.py::test_cliente_solo_ve_y_gestiona_sus_propios_pedidos
+0.20s call     tests/test_auth.py::test_comunicacion_entre_nodos_reenvia_la_autorizacion
+0.20s call     tests/test_auth.py::test_token_de_un_nodo_es_valido_en_el_otro_pero_no_con_otro_secreto
 =========================== short test summary info ============================
 SKIPPED [1] tests/test_cluster_e2e.py:50: Define CLUSTER_BASE_URL (p. ej. http://localhost:8080) y CLUSTER_ADMIN_PASSWORD con el clúster arriba
 SKIPPED [1] tests/test_cluster_e2e.py:73: Define CLUSTER_BASE_URL (p. ej. http://localhost:8080) y CLUSTER_ADMIN_PASSWORD con el clúster arriba
 SKIPPED [1] tests/test_cluster_e2e.py:84: Define CLUSTER_BASE_URL (p. ej. http://localhost:8080) y CLUSTER_ADMIN_PASSWORD con el clúster arriba
 SKIPPED [1] tests/test_cluster_e2e.py:102: Define CLUSTER_BASE_URL (p. ej. http://localhost:8080) y CLUSTER_ADMIN_PASSWORD con el clúster arriba
 SKIPPED [1] tests/test_cluster_e2e.py:129: Define CLUSTER_BASE_URL (p. ej. http://localhost:8080) y CLUSTER_ADMIN_PASSWORD con el clúster arriba
-======================== 28 passed, 5 skipped in 8.48s =========================
+SKIPPED [1] tests/test_cluster_e2e.py:140: Define CLUSTER_BASE_URL (p. ej. http://localhost:8080) y CLUSTER_ADMIN_PASSWORD con el clúster arriba
+======================== 36 passed, 6 skipped in 6.45s =========================
 ```
 
-Los 5 `SKIPPED` son los tests e2e, que por diseño sólo corren con el clúster levantado y la contraseña
+Los 6 `SKIPPED` son los tests e2e, que por diseño sólo corren con el clúster levantado y la contraseña
 del administrador (§5.3).
 
 ### 5.2 Misma suite contra PostgreSQL 16 real
@@ -219,7 +246,7 @@ docker run --rm --network act5_default \
   -e TEST_PRIMARY_DB_URL=postgresql://admin:secretpassword@db-primary:5432/orders_test \
   -e TEST_REPLICA_DB_URL=postgresql://admin:secretpassword@db-replica:5432/orders_test \
   -v "$PWD":/src:ro python:3.11-slim sh -c \
-  "cp -r /src /app && cd /app && pip install -q -r requirements-dev.txt && python -m pytest -v -p no:cacheprovider tests/test_orders.py tests/test_auth.py"
+  "cp -r /src /app && cd /app && pip install -q -r requirements-dev.txt && python -m pytest -v -p no:cacheprovider tests/test_orders.py tests/test_auth.py tests/test_monitoring.py"
 ```
 
 ```text
@@ -228,38 +255,46 @@ platform linux -- Python 3.11.18, pytest-9.2.0, pluggy-1.7.0 -- /usr/local/bin/p
 rootdir: /app
 configfile: pytest.ini
 plugins: anyio-4.16.0
-collecting ... collected 28 items
+collecting ... collected 36 items
 
-tests/test_orders.py::test_crear_pedido_se_escribe_en_primaria_y_se_replica PASSED [  3%]
-tests/test_orders.py::test_actualizar_estado_recorre_todo_el_ciclo PASSED [  7%]
-tests/test_orders.py::test_actualizar_estado_rechaza_transiciones_invalidas PASSED [ 10%]
-tests/test_orders.py::test_eliminar_pedido_con_borrado_logico_replicado PASSED [ 14%]
-tests/test_orders.py::test_fallo_de_nodo_devuelve_503_en_orders PASSED   [ 17%]
-tests/test_orders.py::test_failover_bd_primaria_a_replica_y_reconciliacion PASSED [ 21%]
-tests/test_orders.py::test_failover_cuando_la_primaria_es_inalcanzable_de_verdad PASSED [ 25%]
-tests/test_orders.py::test_si_caen_ambas_bd_responde_503_y_nunca_500 PASSED [ 28%]
-tests/test_orders.py::test_replica_caida_no_bloquea_escrituras_en_primaria PASSED [ 32%]
-tests/test_orders.py::test_listar_y_filtrar_por_estado_y_cliente PASSED  [ 35%]
-tests/test_orders.py::test_editar_pedido_recalcula_total_y_solo_si_esta_pendiente PASSED [ 39%]
-tests/test_orders.py::test_creacion_idempotente_con_id_generado_por_el_cliente PASSED [ 42%]
-tests/test_orders.py::test_validaciones_de_entrada PASSED                [ 46%]
-tests/test_orders.py::test_health_y_cabecera_x_handled_by_node PASSED    [ 50%]
-tests/test_orders.py::test_comunicacion_entre_nodos_reenvia_caos_y_propaga_caida_de_bd PASSED [ 53%]
-tests/test_auth.py::test_registro_y_login_devuelven_token_y_el_usuario_se_replica PASSED [ 57%]
-tests/test_auth.py::test_login_invalido_no_revela_si_el_usuario_existe PASSED [ 60%]
-tests/test_auth.py::test_validaciones_de_registro_y_no_se_puede_auto_asignar_admin PASSED [ 64%]
-tests/test_auth.py::test_endpoints_protegidos_rechazan_tokens_ausentes_falsos_o_expirados PASSED [ 67%]
-tests/test_auth.py::test_token_de_un_nodo_es_valido_en_el_otro_pero_no_con_otro_secreto PASSED [ 71%]
-tests/test_auth.py::test_usuario_desactivado_pierde_el_acceso_aunque_su_token_no_haya_expirado PASSED [ 75%]
-tests/test_auth.py::test_bloqueo_temporal_tras_varios_intentos_fallidos PASSED [ 78%]
-tests/test_auth.py::test_cliente_solo_ve_y_gestiona_sus_propios_pedidos PASSED [ 82%]
-tests/test_auth.py::test_cliente_no_accede_al_caos_ni_a_la_replicacion PASSED [ 85%]
-tests/test_auth.py::test_login_y_registro_funcionan_con_la_bd_primaria_caida PASSED [ 89%]
-tests/test_auth.py::test_admin_inicial_se_crea_una_sola_vez_y_con_contrasena_generada PASSED [ 92%]
-tests/test_auth.py::test_cli_crea_o_restablece_un_administrador PASSED   [ 96%]
-tests/test_auth.py::test_comunicacion_entre_nodos_reenvia_la_autorizacion PASSED [100%]
+tests/test_orders.py::test_crear_pedido_se_escribe_en_primaria_y_se_replica PASSED [  2%]
+tests/test_orders.py::test_actualizar_estado_recorre_todo_el_ciclo PASSED [  5%]
+tests/test_orders.py::test_actualizar_estado_rechaza_transiciones_invalidas PASSED [  8%]
+tests/test_orders.py::test_eliminar_pedido_con_borrado_logico_replicado PASSED [ 11%]
+tests/test_orders.py::test_fallo_de_nodo_devuelve_503_en_orders PASSED   [ 13%]
+tests/test_orders.py::test_failover_bd_primaria_a_replica_y_reconciliacion PASSED [ 16%]
+tests/test_orders.py::test_failover_cuando_la_primaria_es_inalcanzable_de_verdad PASSED [ 19%]
+tests/test_orders.py::test_si_caen_ambas_bd_responde_503_y_nunca_500 PASSED [ 22%]
+tests/test_orders.py::test_replica_caida_no_bloquea_escrituras_en_primaria PASSED [ 25%]
+tests/test_orders.py::test_listar_y_filtrar_por_estado_y_cliente PASSED  [ 27%]
+tests/test_orders.py::test_editar_pedido_recalcula_total_y_solo_si_esta_pendiente PASSED [ 30%]
+tests/test_orders.py::test_creacion_idempotente_con_id_generado_por_el_cliente PASSED [ 33%]
+tests/test_orders.py::test_validaciones_de_entrada PASSED                [ 36%]
+tests/test_orders.py::test_health_y_cabecera_x_handled_by_node PASSED    [ 38%]
+tests/test_orders.py::test_comunicacion_entre_nodos_reenvia_caos_y_propaga_caida_de_bd PASSED [ 41%]
+tests/test_auth.py::test_registro_y_login_devuelven_token_y_el_usuario_se_replica PASSED [ 44%]
+tests/test_auth.py::test_login_invalido_no_revela_si_el_usuario_existe PASSED [ 47%]
+tests/test_auth.py::test_validaciones_de_registro_y_no_se_puede_auto_asignar_admin PASSED [ 50%]
+tests/test_auth.py::test_endpoints_protegidos_rechazan_tokens_ausentes_falsos_o_expirados PASSED [ 52%]
+tests/test_auth.py::test_token_de_un_nodo_es_valido_en_el_otro_pero_no_con_otro_secreto PASSED [ 55%]
+tests/test_auth.py::test_usuario_desactivado_pierde_el_acceso_aunque_su_token_no_haya_expirado PASSED [ 58%]
+tests/test_auth.py::test_bloqueo_temporal_tras_varios_intentos_fallidos PASSED [ 61%]
+tests/test_auth.py::test_cliente_solo_ve_y_gestiona_sus_propios_pedidos PASSED [ 63%]
+tests/test_auth.py::test_cliente_no_accede_al_caos_ni_a_la_replicacion PASSED [ 66%]
+tests/test_auth.py::test_login_y_registro_funcionan_con_la_bd_primaria_caida PASSED [ 69%]
+tests/test_auth.py::test_admin_inicial_se_crea_una_sola_vez_y_con_contrasena_generada PASSED [ 72%]
+tests/test_auth.py::test_cli_crea_o_restablece_un_administrador PASSED   [ 75%]
+tests/test_auth.py::test_comunicacion_entre_nodos_reenvia_la_autorizacion PASSED [ 77%]
+tests/test_monitoring.py::test_monitoreo_es_solo_para_administradores PASSED [ 80%]
+tests/test_monitoring.py::test_metricas_cuentan_peticiones_por_estado_y_latencia PASSED [ 83%]
+tests/test_monitoring.py::test_las_consultas_de_monitoreo_y_salud_no_inflan_las_metricas PASSED [ 86%]
+tests/test_monitoring.py::test_caidas_simuladas_lecturas_desde_replica_y_eventos PASSED [ 88%]
+tests/test_monitoring.py::test_eventos_de_seguridad_y_contrasena_generada_oculta PASSED [ 91%]
+tests/test_monitoring.py::test_vista_de_cluster_agrega_nodos_por_rest_y_marca_los_inalcanzables PASSED [ 94%]
+tests/test_monitoring.py::test_estado_del_gateway_desde_stub_status_de_nginx PASSED [ 97%]
+tests/test_monitoring.py::test_serie_temporal_alineada_y_percentiles PASSED [100%]
 
-============================== 28 passed in 7.86s ==============================
+============================= 36 passed in 15.46s ==============================
 ```
 
 ### 5.3 Pruebas end-to-end contra el clúster Docker
@@ -277,15 +312,16 @@ platform win32 -- Python 3.14.7, pytest-9.2.0, pluggy-1.7.0 -- C:\Users\…\back
 rootdir: C:\Users\…\backend
 configfile: pytest.ini
 plugins: anyio-4.16.0
-collecting ... collected 5 items
+collecting ... collected 6 items
 
-tests/test_cluster_e2e.py::test_e2e_sesion_valida_en_ambos_nodos_y_sin_reintentos_en_401 PASSED [ 20%]
-tests/test_cluster_e2e.py::test_e2e_round_robin_alterna_entre_los_dos_nodos PASSED [ 40%]
-tests/test_cluster_e2e.py::test_e2e_caida_de_nodo_es_transparente_para_el_cliente PASSED [ 60%]
-tests/test_cluster_e2e.py::test_e2e_failover_de_bd_primaria_y_reconciliacion PASSED [ 80%]
-tests/test_cluster_e2e.py::test_e2e_gateway_sirve_el_frontend_react PASSED [100%]
+tests/test_cluster_e2e.py::test_e2e_sesion_valida_en_ambos_nodos_y_sin_reintentos_en_401 PASSED [ 16%]
+tests/test_cluster_e2e.py::test_e2e_round_robin_alterna_entre_los_dos_nodos PASSED [ 33%]
+tests/test_cluster_e2e.py::test_e2e_caida_de_nodo_es_transparente_para_el_cliente PASSED [ 50%]
+tests/test_cluster_e2e.py::test_e2e_failover_de_bd_primaria_y_reconciliacion PASSED [ 66%]
+tests/test_cluster_e2e.py::test_e2e_gateway_sirve_el_frontend_react PASSED [ 83%]
+tests/test_cluster_e2e.py::test_e2e_monitoreo_agrega_ambos_nodos_y_el_gateway PASSED [100%]
 
-============================== 5 passed in 8.17s ==============================
+============================= 6 passed in 15.42s ==============================
 ```
 
 ---
@@ -525,14 +561,33 @@ Referrer-Policy: strict-origin-when-cross-origin
 `X-Upstream-Addr` (IPs internas de Docker) dejó de exponerse; `X-Upstream-Status` se mantiene como
 evidencia del failover.
 
+### 6.7 Monitoreo agregado a través del gateway (v1.2)
+
+Consulta real a `GET /api/monitoring/cluster` (con sesión de admin) tras 8 peticiones, y prueba de que
+el puerto interno del `stub_status` no está publicado:
+
+```text
+8081 desde el host: 000
+no accesible (correcto)
+summary: {'nodes_total': 2, 'nodes_up': 2, 'requests_per_minute': 9, 'window_requests': 9, 'window_server_errors': 0, 'error_rate': 0.0, 'latency_p95_worst_ms': 307.74, 'db_failovers': 0, 'window_replica_served': 0, 'in_sync': True}
+gateway: {'configured': True, 'reachable': True, 'active': 2, 'accepts': 3, 'handled': 3, 'requests': 12, 'reading': 0, 'writing': 2, 'waiting': 0}
+  Nodo-Alpha-01 reachable True | window_requests 4 | p95 282.2 | buckets 30
+  Nodo-Beta-02 reachable True | window_requests 5 | p95 307.74 | buckets 30
+```
+
+**Análisis:** Round-Robin repartió 4/5 peticiones; cada nodo midió las suyas y el nodo que respondió las
+combinó por REST. La p95 de unos 300 ms corresponde al inicio de sesión (PBKDF2 con 600 000 iteraciones),
+que es lento a propósito.
+
 ---
 
 ## 7. Pruebas de interfaz (navegador real)
 
 Script `e2e-ui/ui-test.mjs`: abre el dashboard en Chrome headless, **inicia sesión con el formulario
-real**, hace clic en los botones y comprueba lo que se muestra; al final cierra sesión, **registra un
-cliente** y verifica que sólo vea lo suyo. También genera las capturas de `docs/img/` usadas en el
-manual de usuario. Ejecutado sobre un clúster recién creado (`docker compose down -v && docker compose up -d --build`):
+real**, hace clic en los botones y comprueba lo que se muestra; después de las caídas abre la pestaña
+**Monitoreo** (tarjetas, indicadores, gráficos, tooltip, eventos y vista en tabla); al final cierra
+sesión, **registra un cliente** y verifica que sólo vea lo suyo. También genera las capturas de
+`docs/img/` usadas en el manual de usuario. Ejecutado sobre un clúster recién creado (`docker compose down -v && docker compose up -d --build`):
 
 ```text
 PASS  Sin sesión se muestra la pantalla de inicio de sesión
@@ -560,6 +615,13 @@ PASS  Con db-primary caída, el pedido se guarda en 'Replica Failover'
 PASS  Se muestra el aviso de failover de BD
 PASS  Al restaurar, la reconciliación copia 1 fila réplica → primaria  -> db-primary restaurada · reconciliación: 1 fila(s) copiadas réplica → primaria×
 PASS  Panel indica 'Réplica en sincronía'
+PASS  Monitoreo: tarjeta por nodo, ambos operativos  -> 2 tarjetas
+PASS  Monitoreo: indicadores del clúster (2 / 2 nodos)  -> Nodos operativos2 / 2✓ todos atienden tráfico
+PASS  Monitoreo: gráficos con una línea por nodo  -> 4 trazos
+PASS  Monitoreo: el tooltip de la cruz de lectura muestra ambos nodos
+PASS  Monitoreo: eventos de caos y de failover de BD  -> 17 eventos
+PASS  Monitoreo: el gateway reporta conexiones
+PASS  Monitoreo: cada gráfico tiene vista de tabla  -> 30 filas
 PASS  Filtro por estado 'En proceso'  -> Supermercado La Economía | Ferretería El Tornillo
 PASS  Búsqueda por cliente ('clínica')  -> Clínica San Rafael
 PASS  Eliminar pedidos con confirmación en dos pasos
@@ -573,12 +635,16 @@ PASS  El cliente no puede avanzar estados (sin botón →)
 PASS  El cliente puede cancelar su pedido pendiente
 PASS  Sin errores de JavaScript en la consola
 
-RESULTADO UI: 37/37 verificaciones OK
+RESULTADO UI: 44/44 verificaciones OK
 ```
 
 Evidencia visual del failover de nodo capturada durante esta prueba:
 
 ![Registro con reintento 503 → 200](img/05_registro_peticiones_failover.png)
+
+Panel de monitoreo durante la misma ejecución (después de las caídas de nodo y de BD):
+
+![Panel de monitoreo](img/11_monitoreo.png)
 
 ---
 
@@ -586,15 +652,15 @@ Evidencia visual del failover de nodo capturada durante esta prueba:
 
 | Suite | Ejecutados | Pasaron | Fallaron | Omitidos | Duración |
 |-------|-----------:|--------:|---------:|---------:|---------:|
-| pytest — Python 3.11 + SQLite | 33 | 28 | 0 | 5 (e2e, por diseño) | 8.48 s |
-| pytest — Python 3.11 + PostgreSQL 16 | 28 | 28 | 0 | 0 | 7.86 s |
-| pytest e2e — clúster Docker | 5 | 5 | 0 | 0 | 8.17 s |
+| pytest — Python 3.11 + SQLite | 42 | 36 | 0 | 6 (e2e, por diseño) | 6.45 s |
+| pytest — Python 3.11 + PostgreSQL 16 | 36 | 36 | 0 | 0 | 15.46 s |
+| pytest e2e — clúster Docker | 6 | 6 | 0 | 0 | 15.42 s |
 | Verificaciones de clúster (simuladas + reales) | 8 | 8 | 0 | 0 | — |
 | Actualización con migración (v1.0 → v1.1) | 1 | 1 | 0 | 0 | — |
-| Interfaz (Chrome headless) | 37 | 37 | 0 | 0 | — |
+| Interfaz (Chrome headless) | 44 | 44 | 0 | 0 | — |
 
 **Tasa de éxito: 100 %** en todas las suites. Los 5 casos exigidos (REQ-1 a REQ-5) pasan tanto con
-SQLite como con PostgreSQL real, igual que los 13 de seguridad.
+SQLite como con PostgreSQL real, igual que los 13 de seguridad y los 8 de monitoreo.
 
 ---
 
@@ -609,6 +675,8 @@ Las pruebas detectaron estos problemas, que se corrigieron antes de la versión 
 | 3 | Prueba de interfaz | En capturas de página completa la barra superior fija aparecía en medio de la imagen. | La barra deja de ser fija en móvil; el script de capturas la desfija y vuelve arriba antes de capturar. |
 | 4 | Prueba de interfaz (re-ejecución) | El script fallaba al repetirse con datos existentes (nombres de cliente repetidos). | Espera a que aumente el número de filas en lugar de buscar el nombre. |
 | 5 | Prueba de interfaz (v1.1) | Con la nueva Content-Security-Policy, el navegador bloqueó el `<style>` en línea que inyectaba el script de capturas (*"Applying inline style violates the following Content Security Policy directive"*). Confirma que la CSP se aplica; la aplicación en sí no generó ninguna violación. | El script ajusta la página mediante CSSOM (`element.style`), que la CSP permite. |
+| 7 | Validador de paleta (v1.2) | Los colores de los nodos (azul `#2563eb` / violeta `#7c3aed`) tenían ΔE **0,4** en deuteranopía (indistinguibles para personas con daltonismo) y 12,4 en visión normal (bajo el umbral de 15). En los chips no era grave porque llevan el nombre escrito, pero en un gráfico de líneas sí. | Beta pasó a naranja (`#eb6834`, texto `#c2410c`) en toda la aplicación: ΔE 29,9 en deuteranopía y 38,5 en visión normal (todas las comprobaciones en PASS). |
+| 8 | Revisión de capturas (v1.2) | El último error de `db-primary` seguía en rojo en la tarjeta del nodo aunque la primaria ya estaba restaurada. | El error se muestra con su hora; en rojo sólo mientras el problema sigue activo (caída simulada o circuit breaker abierto), si no, en gris como historial. |
 | 6 | Prueba de interfaz (v1.1) | El 401 del login fallido que la prueba provoca a propósito aparece en la consola del navegador como recurso fallido y la verificación "sin errores de consola" lo contaba. | Se tolera exactamente ese 401 esperado; cualquier otro error sigue haciendo fallar la prueba. |
 
 Observación (no es un defecto): al enviar JSON con tildes desde `curl` en Git Bash de Windows, la
@@ -637,7 +705,11 @@ guardan bien (verificado: `'Bruno D\xedaz'`).
    primaria caída, y los usuarios se replican y reconcilian igual que los pedidos. Los permisos se
    aplican en el servidor (un cliente no puede ver pedidos ajenos, cambiar estados ni usar el caos).
 
-El sistema cumple los objetivos de **disponibilidad**, **replicación**, **recuperación** y **control de acceso** planteados.
+7. **Monitoreo**: cada nodo mide su tráfico, latencia y eventos sin depender de la base de datos; la
+   vista agregada combina ambos nodos por REST, informa un nodo caído en lugar de fallar y muestra en
+   vivo los failovers y caídas provocados en la demo.
+
+El sistema cumple los objetivos de **disponibilidad**, **replicación**, **recuperación**, **control de acceso** y **observabilidad** planteados.
 
 ---
 
@@ -654,5 +726,7 @@ El sistema cumple los objetivos de **disponibilidad**, **replicación**, **recup
 - El gateway es un punto único de fallo; en producción se usaría un balanceador redundante.
 - El límite de intentos de login vive en la memoria de cada nodo: con 2 nodos un atacante dispone del
   doble de intentos. Un límite global requeriría estado compartido (p. ej. Redis o `limit_req` en NGINX).
+- Las métricas de monitoreo están en memoria (se pierden al reiniciar un nodo y cubren 15 min) y no hay
+  alertas; para producción se exportarían a Prometheus/Grafana.
 - El token se guarda en `localStorage`: es simple y evita CSRF, pero un XSS podría leerlo (mitigado con la
   CSP estricta). La alternativa es una cookie `HttpOnly` con protección CSRF.

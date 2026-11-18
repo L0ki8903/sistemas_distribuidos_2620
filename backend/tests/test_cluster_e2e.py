@@ -135,3 +135,26 @@ def test_e2e_gateway_sirve_el_frontend_react(http):
     spa_route = http.get("/ruta/del/frontend")  # try_files -> index.html
     assert spa_route.status_code == 200
     assert '<div id="root">' in spa_route.text
+
+
+def test_e2e_monitoreo_agrega_ambos_nodos_y_el_gateway(http):
+    for _ in range(6):
+        http.get("/api/orders")
+    view = http.get("/api/monitoring/cluster", params={"window": 300})
+    assert view.status_code == 200, view.text
+    data = view.json()
+
+    nodes = {n["node"]: n for n in data["nodes"]}
+    assert set(nodes) == NODES and all(n["reachable"] for n in nodes.values())
+    assert data["summary"]["nodes_up"] == 2
+    assert sum(n["traffic"]["window_requests"] for n in nodes.values()) >= 6
+    # El gateway expone stub_status en un puerto interno (8081) que los nodos leen por la red de Docker.
+    assert data["gateway"]["configured"] is True and data["gateway"]["reachable"] is True
+    assert data["gateway"]["requests"] > 0
+    with httpx.Client(timeout=3) as outside:  # ...y que NO está publicado hacia fuera
+        try:
+            outside.get(BASE_URL.replace(":8080", ":8081") + "/nginx_status")
+            exposed = True
+        except httpx.HTTPError:
+            exposed = False
+    assert exposed is False

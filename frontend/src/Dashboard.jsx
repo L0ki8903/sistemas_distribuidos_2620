@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, onApiEvent } from "./api.js";
 import ClusterPanel from "./components/ClusterPanel.jsx";
+import MonitoringPanel from "./components/MonitoringPanel.jsx";
 import OrderForm from "./components/OrderForm.jsx";
 import OrdersTable from "./components/OrdersTable.jsx";
 import RequestLog from "./components/RequestLog.jsx";
@@ -12,6 +13,12 @@ const LOG_SIZE = 30;
 
 export default function Dashboard({ user, onLogout }) {
   const isAdmin = user.role === "admin";
+  // Pestañas del administrador; el hash (#monitoreo) permite enlazar directamente al panel.
+  const [tab, setTab] = useState(() => (isAdmin && window.location.hash === "#monitoreo" ? "monitoreo" : "operacion"));
+  const selectTab = (next) => {
+    setTab(next);
+    window.history.replaceState(null, "", next === "monitoreo" ? "#monitoreo" : window.location.pathname);
+  };
   const [orders, setOrders] = useState([]);
   const [ordersState, setOrdersState] = useState({ loading: true, error: null, dbUsed: null });
   const [cluster, setCluster] = useState(null);
@@ -71,7 +78,7 @@ export default function Dashboard({ user, onLogout }) {
   }, []);
 
   const refreshCluster = useCallback(async () => {
-    if (!isAdmin) return; // la vista del clúster y la replicación son sólo para administradores
+    if (!isAdmin || document.location.hash === "#monitoreo") return; // sólo admin, y sólo en "Operación"
     const [status, repl] = await Promise.allSettled([api.clusterStatus(), api.replicationStatus()]);
     if (status.status === "fulfilled") setCluster(status.value.data);
     if (repl.status === "fulfilled") setReplication(repl.value.data);
@@ -249,6 +256,20 @@ export default function Dashboard({ user, onLogout }) {
       </header>
 
       <main className="container">
+        {isAdmin && (
+          <nav className="tabs" role="tablist" aria-label="Secciones del panel">
+            <button type="button" role="tab" aria-selected={tab === "operacion"} className={tab === "operacion" ? "tab active" : "tab"} onClick={() => selectTab("operacion")}>
+              Operación
+            </button>
+            <button type="button" role="tab" aria-selected={tab === "monitoreo"} className={tab === "monitoreo" ? "tab active" : "tab"} onClick={() => selectTab("monitoreo")}>
+              Monitoreo
+            </button>
+          </nav>
+        )}
+        {tab === "monitoreo" ? (
+          <MonitoringPanel />
+        ) : (
+          <>
         <ClusterPanel
           isAdmin={isAdmin}
           lastRequest={lastRequest}
@@ -286,6 +307,8 @@ export default function Dashboard({ user, onLogout }) {
         </div>
 
         <RequestLog entries={log} onClear={() => setLog([])} />
+          </>
+        )}
       </main>
 
       <footer className="footer muted">

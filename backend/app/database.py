@@ -180,6 +180,7 @@ class DatabaseCluster:
         self._schema_ready = {PRIMARY: False, REPLICA: False}
         self.failover_count = 0
         self.last_primary_error: str | None = None
+        self.last_primary_error_at: str | None = None
         self.last_sync: dict[str, Any] | None = None
 
     # ------------------------------------------------------------------ ciclo de vida / esquema
@@ -231,6 +232,7 @@ class DatabaseCluster:
             self._needs_resync = True
             self.failover_count += 1
             self.last_primary_error = describe_error(exc)
+            self.last_primary_error_at = utcnow().isoformat()
             if not isinstance(exc, (SimulatedPrimaryDownError, PrimaryCircuitOpenError)):
                 self._primary_open_until = time.monotonic() + self.settings.breaker_cooldown_seconds
         logger.warning("FAILOVER %s: db-primary no disponible (%s) -> db-replica", operation, describe_error(exc))
@@ -458,6 +460,7 @@ class DatabaseCluster:
             "needs_resync": self._needs_resync,
             "failover_count": self.failover_count,
             "last_primary_error": self.last_primary_error,
+            "last_primary_error_at": self.last_primary_error_at,
             "last_sync": self.last_sync,
         }
 

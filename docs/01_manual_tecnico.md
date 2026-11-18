@@ -1,6 +1,6 @@
 # Manual Técnico — Sistema Distribuido de Gestión de Pedidos Tolerante a Fallos
 
-> Proyecto final de Sistemas Distribuidos · Versión 1.1.0 (autenticación y seguridad) · Noviembre de 2026
+> Proyecto final de Sistemas Distribuidos · Versión 1.2.0 (autenticación, seguridad y monitoreo) · Noviembre de 2026
 
 ## Contenido
 
@@ -12,12 +12,13 @@
 6. [Mecanismos de tolerancia a fallos](#6-mecanismos-de-tolerancia-a-fallos)
 7. [Diagramas de secuencia de fallos](#7-diagramas-de-secuencia-de-fallos)
 8. [Autenticación y seguridad](#8-autenticación-y-seguridad)
-9. [Modelo de datos y máquina de estados](#9-modelo-de-datos-y-máquina-de-estados)
-10. [Referencia de la API](#10-referencia-de-la-api)
-11. [Ejemplo de fallo simulado paso a paso](#11-ejemplo-de-fallo-simulado-paso-a-paso)
-12. [Tecnologías empleadas y justificación](#12-tecnologías-empleadas-y-justificación)
-13. [Variables de entorno](#13-variables-de-entorno)
-14. [Decisiones de diseño, limitaciones y trabajo futuro](#14-decisiones-de-diseño-limitaciones-y-trabajo-futuro)
+9. [Monitoreo de nodos](#9-monitoreo-de-nodos)
+10. [Modelo de datos y máquina de estados](#10-modelo-de-datos-y-máquina-de-estados)
+11. [Referencia de la API](#11-referencia-de-la-api)
+12. [Ejemplo de fallo simulado paso a paso](#12-ejemplo-de-fallo-simulado-paso-a-paso)
+13. [Tecnologías empleadas y justificación](#13-tecnologías-empleadas-y-justificación)
+14. [Variables de entorno](#14-variables-de-entorno)
+15. [Decisiones de diseño, limitaciones y trabajo futuro](#15-decisiones-de-diseño-limitaciones-y-trabajo-futuro)
 
 ---
 
@@ -37,6 +38,8 @@ primaria en caliente para demostrar el comportamiento ante fallos.
 
 Desde la versión 1.1 el acceso está **autenticado** (JWT) y **autorizado por roles** (`user` = cliente,
 `admin` = operador). La sesión sigue funcionando aunque caiga un nodo o la base primaria (§8).
+La versión 1.2 añade un **panel de monitoreo** para el administrador: tráfico, latencia, errores y eventos
+de cada nodo, del gateway y de las bases, reunidos por REST entre nodos (§9).
 
 ---
 
@@ -107,6 +110,7 @@ flowchart LR
 │   │   ├── users.py             Reglas de usuarios: registro, búsqueda, administrador inicial
 │   │   ├── bootstrap.py         Crea el administrador inicial al arrancar (id determinista)
 │   │   ├── cli.py               python -m app.cli create-admin (crear/restablecer administradores)
+│   │   ├── metrics.py           Métricas por nodo en memoria, eventos desde los logs, stub_status de NGINX
 │   │   ├── database.py          DatabaseCluster: doble sesión, escritura dual, failover,
 │   │   │                        circuit breaker y reconciliación
 │   │   ├── services.py          Reglas de negocio: CRUD, máquina de estados, permisos por rol, idempotencia
@@ -115,12 +119,13 @@ flowchart LR
 │   │   ├── chaos.py             Banderas SIMULATE_CRASH / SIMULATE_DB_PRIMARY_DOWN
 │   │   ├── peers.py             Cliente REST entre nodos (httpx)
 │   │   ├── deps.py              Dependencias FastAPI: sesión (get_current_actor) y require_admin
-│   │   └── routers/             auth.py · orders.py · chaos.py · system.py
-│   ├── tests/                   test_orders.py (15) · test_auth.py (13) · test_cluster_e2e.py (5)
+│   │   └── routers/             auth.py · orders.py · chaos.py · system.py · monitoring.py
+│   ├── tests/                   test_orders.py (15) · test_auth.py (13) · test_monitoring.py (8) · test_cluster_e2e.py (6)
 │   └── Dockerfile, requirements*.txt, pytest.ini
 ├── frontend/                    React 18 + Vite (dashboard logístico)
 │   └── src/ App.jsx (puerta de sesión) · Dashboard.jsx · auth.js · api.js · format.js ·
-│            components/ (LoginPage, ClusterPanel, OrderForm, OrdersTable, RequestLog, Toasts) · styles.css
+│            components/ (LoginPage, ClusterPanel, MonitoringPanel, LineChart, OrderForm, OrdersTable,
+│                         RequestLog, Toasts) · styles.css
 ├── nginx/                       nginx.conf (upstream + failover) · security-headers.conf · Dockerfile multi-stage
 ├── database/                    init.sql (tablas orders/users + 3 pedidos) · Dockerfile
 ├── e2e-ui/                      Prueba de interfaz con Chrome (puppeteer-core) + capturas
@@ -188,7 +193,7 @@ proxy_next_upstream error timeout http_500 http_502 http_503 http_504 non_idempo
 proxy_next_upstream_tries 2;
 ```
 
-- **Round-Robin** reparte las peticiones alternando nodos (evidencia: §11).
+- **Round-Robin** reparte las peticiones alternando nodos (evidencia: §12).
 - Si un nodo **no acepta la conexión, excede el timeout o responde 5xx**, NGINX **reintenta la misma
   petición en el otro nodo** y el cliente recibe la respuesta buena. Tras un fallo, el nodo queda
   excluido 10 s (`max_fails=1 fail_timeout=10s`) y luego se vuelve a probar con tráfico real.
@@ -399,7 +404,7 @@ sequenceDiagram
 
 ### 8.2 Usuarios replicados
 
-La tabla `users` (§9.2) se trata exactamente igual que `orders`: **escritura dual**, **failover** y
+La tabla `users` (§10.2) se trata exactamente igual que `orders`: **escritura dual**, **failover** y
 **reconciliación last-write-wins**. Por eso se puede **registrar e iniciar sesión con la primaria
 caída**, y las cuentas creadas durante la caída se copian a la primaria al recuperarse (prueba S-10 del
 informe). Si durante una partición se creara el mismo `username` en ambas bases con ids distintos, la
@@ -443,7 +448,7 @@ crea cuentas `user`: el campo `role` no se acepta (422), así que nadie puede au
 - El mismo mensaje y el mismo tiempo de respuesta para "usuario inexistente" y "contraseña incorrecta"
   (se ejecuta un PBKDF2 ficticio), para no permitir **enumerar usuarios**.
 - **Límite de intentos**: 5 fallos en 5 minutos por (usuario, IP) devuelven **429** con `Retry-After`.
-  El contador vive en la memoria de cada nodo (limitación en §14).
+  El contador vive en la memoria de cada nodo (limitación en §15).
 - El hash se calcula **fuera de la transacción** para no retener conexiones a la base.
 
 ### 8.5 Seguridad en el gateway
@@ -472,9 +477,92 @@ pedidos existentes quedan con `owner_id = NULL` (sólo visibles para el administ
 
 ---
 
-## 9. Modelo de datos y máquina de estados
+## 9. Monitoreo de nodos
 
-### 9.1 Tabla `orders` (idéntica en `db-primary` y `db-replica`)
+Pestaña **Monitoreo** del administrador (`frontend/src/components/MonitoringPanel.jsx`), alimentada por
+`GET /api/monitoring/cluster`.
+
+### 9.1 Qué se mide y dónde
+
+Cada nodo se mide **a sí mismo, en memoria** (`app/metrics.py`). No hay una base de métricas a propósito:
+si el monitoreo dependiera de `db-primary`, se quedaría ciego justo durante un failover.
+
+| Métrica | Cómo se obtiene |
+|---------|-----------------|
+| Peticiones por estado (2xx/3xx, 4xx, 5xx) y por grupo (`orders`, `auth`, `chaos`, `replication`) | El mismo middleware que añade `X-Handled-By-Node` mide cada petición |
+| 503 simulados | Peticiones rechazadas por `SIMULATE_CRASH` |
+| Atendidas por la réplica | Respuestas con `X-DB-Used: replica_failover` |
+| Latencia media, p50, p95 y máxima | Últimas 2 000 muestras, filtradas por la ventana pedida (5 o 15 min) |
+| Serie temporal | Cubos de **10 s** alineados al reloj (múltiplos de 10 del tiempo Unix), así las series de distintos nodos encajan punto a punto |
+| Failovers de BD, circuit breaker, último error (con hora), última reconciliación | Estado de `DatabaseCluster` |
+| Uptime, versión, Python | Del proceso |
+
+No cuentan como tráfico: el propio sondeo del panel (`/api/monitoring/*`), `/api/health` (healthchecks
+de Docker) ni las llamadas entre nodos (cabecera `X-Chaos-Forwarded-By`). Así el panel no se mide a sí
+mismo. La latencia p95 incluye el inicio de sesión, que es lento **a propósito** (PBKDF2, §8.4).
+
+### 9.2 Eventos a partir de los logs
+
+`EventLogHandler` se conecta al logger `pedidos` del nodo y convierte en eventos los mensajes que ya
+existían: `FAILOVER`/`WRITE` (failover de BD), `REPLICATION`, `SYNC` (reconciliación), `CHAOS`, `AUTH`
+(p. ej. login fallido), `SCHEMA`, `ADMIN` y el arranque del nodo. Así **no se tocó la lógica
+distribuida** para observarla. Se guardan todos los `WARNING`/`ERROR` y sólo los `INFO` relevantes (una
+replicación correcta no es un evento). Los mensajes repetidos seguidos se agrupan con un contador
+(`×9`), y la contraseña generada del administrador se **oculta** antes de llegar al panel.
+
+### 9.3 Vista agregada por REST
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant UI as Panel (admin)
+    participant G as NGINX
+    participant A as Nodo-Alpha-01
+    participant B as Nodo-Beta-02
+    participant S as gateway:8081
+    participant D as db-primary / db-replica
+    UI->>G: GET /api/monitoring/cluster (Bearer admin)
+    G->>A: turno Round-Robin
+    A->>B: GET /api/monitoring/local (mismo token)
+    B-->>A: métricas y eventos de Beta
+    A->>S: GET /nginx_status
+    S-->>A: conexiones y peticiones del gateway
+    A->>D: ping y comparación de filas
+    A-->>UI: resumen + nodos + gateway + bases + eventos combinados
+```
+
+Si un nodo no responde, aparece como **inalcanzable** con el motivo y la vista sigue respondiendo 200.
+El resumen suma peticiones por minuto, errores 5xx y lecturas desde la réplica. La latencia p95 del
+clúster se muestra como la del **nodo más lento**, porque los percentiles no se pueden promediar.
+
+### 9.4 Estado del gateway sin exponerlo
+
+NGINX publica `stub_status` en un **segundo `server` en el puerto 8081**, que sólo existe dentro de la red
+de Docker: no está en `ports`, y Traefik (Coolify) sólo enruta al 80. Los nodos lo leen en
+`GATEWAY_STATUS_URL=http://gateway:8081/nginx_status` (conexiones activas, aceptadas, peticiones,
+leyendo/escribiendo/en espera). La prueba e2e E-06 verifica que desde fuera no es accesible.
+
+### 9.5 El panel
+
+- **Filtro en una sola fila** (últimos 5 o 15 min, pausa) que aplica a todo lo de abajo; se actualiza
+  cada 3 s y conserva el dibujo anterior mientras llegan los datos nuevos.
+- **Indicadores**: nodos operativos, peticiones por minuto, % de errores 5xx, latencia p95, peticiones
+  atendidas por la réplica y failovers de BD.
+- **Gráficos** propios en SVG (`LineChart.jsx`), sin librerías:
+  - un eje por gráfico (peticiones y latencia van por separado), líneas de 2 px y cuadrícula fina sólida;
+  - leyenda, cruz de lectura con tooltip (también con el teclado) y **vista en tabla** equivalente;
+  - un hueco en la línea cuando no hay tráfico, nunca un cero inventado.
+- **Colores de nodo validados para daltonismo** con un script de contraste. El par anterior azul/violeta
+  daba ΔE 0,4 en deuteranopía (indistinguible), así que Beta pasó a **naranja** en toda la aplicación
+  (ΔE 29,9).
+- Tarjetas por nodo, tarjeta del gateway, tarjeta de las bases (filas por tabla y divergencias) y
+  **línea de tiempo de eventos** con filtros (failover, caos, reconciliación, seguridad, sistema).
+
+---
+
+## 10. Modelo de datos y máquina de estados
+
+### 10.1 Tabla `orders` (idéntica en `db-primary` y `db-replica`)
 
 | Columna | Tipo PostgreSQL | Descripción |
 |---------|-----------------|-------------|
@@ -492,7 +580,7 @@ pedidos existentes quedan con `owner_id = NULL` (sólo visibles para el administ
 Índices: `ix_orders_status`, `ix_orders_updated_at`, `ix_orders_owner_id`. `database/init.sql` crea la tabla y **3 pedidos de
 ejemplo con IDs y fechas fijos**, para que ambas bases arranquen idénticas.
 
-### 9.2 Tabla `users` (idéntica en ambas bases)
+### 10.2 Tabla `users` (idéntica en ambas bases)
 
 | Columna | Tipo PostgreSQL | Descripción |
 |---------|-----------------|-------------|
@@ -504,7 +592,7 @@ ejemplo con IDs y fechas fijos**, para que ambas bases arranquen idénticas.
 | `is_active` | `BOOLEAN` | Una cuenta desactivada no puede iniciar sesión y pierde la sesión actual |
 | `created_at` / `updated_at` / `deleted_at` | `TIMESTAMPTZ` | Igual que en `orders`: versión LWW y tombstone |
 
-### 9.3 Máquina de estados
+### 10.3 Máquina de estados
 
 ```mermaid
 stateDiagram-v2
@@ -529,7 +617,7 @@ Sólo se permite avanzar **al siguiente estado**. Saltar o retroceder devuelve *
 
 ---
 
-## 10. Referencia de la API
+## 11. Referencia de la API
 
 Documentación interactiva (Swagger): **`http://localhost:8080/api/docs`**.
 
@@ -553,6 +641,8 @@ Documentación interactiva (Swagger): **`http://localhost:8080/api/docs`**.
 | PUT | `/api/chaos/db-primary` | Fija `SIMULATE_DB_PRIMARY_DOWN` (`{"enabled": bool}`) en todo el clúster | admin | 200 |
 | GET | `/api/replication/status` | Filas por base y tabla, `in_sync`, `divergent_by_table` | admin | 200 |
 | POST | `/api/replication/sync` | Fuerza la reconciliación (por tabla en `tables`) | admin | 200 |
+| GET | `/api/monitoring/local?window=300` | Métricas y eventos de **este** nodo (ventana 60–900 s) | admin | 200, 401, 403 |
+| GET | `/api/monitoring/cluster?window=300` | Vista agregada: nodos (vía REST), gateway, bases y eventos | admin | 200, 401, 403 |
 
 Las rutas con sesión requieren `Authorization: Bearer <access_token>`. En Swagger (`/api/docs`) se usa
 el botón **Authorize**.
@@ -626,7 +716,7 @@ Ejemplo — transición inválida (`pendiente → enviado`, como admin):
 
 ---
 
-## 11. Ejemplo de fallo simulado paso a paso
+## 12. Ejemplo de fallo simulado paso a paso
 
 Salidas **reales** obtenidas contra el clúster local (`BASE=http://localhost:8080`) con la versión 1.0.
 Desde la 1.1 los endpoints de pedidos y de caos exigen sesión de administrador; basta con añadir el token
@@ -737,7 +827,7 @@ El mismo comportamiento se verificó con **fallos reales** (`docker compose stop
 
 ---
 
-## 12. Tecnologías empleadas y justificación
+## 13. Tecnologías empleadas y justificación
 
 | Tecnología | Versión | Uso | Justificación |
 |------------|---------|-----|---------------|
@@ -758,7 +848,7 @@ El mismo comportamiento se verificó con **fallos reales** (`docker compose stop
 
 ---
 
-## 13. Variables de entorno
+## 14. Variables de entorno
 
 | Variable | Dónde | Valor por defecto | Descripción |
 |----------|-------|-------------------|-------------|
@@ -780,10 +870,11 @@ El mismo comportamiento se verificó con **fallos reales** (`docker compose stop
 | `ALLOW_REGISTRATION` | `.env` / nodos | `true` | Permite crear cuentas de cliente desde el login |
 | `PASSWORD_HASH_ITERATIONS` | nodos | `600000` | Iteraciones PBKDF2 para hashes nuevos |
 | `LOGIN_MAX_FAILURES` / `LOGIN_WINDOW_SECONDS` | nodos | `5` / `300` | Bloqueo temporal por intentos fallidos |
+| `GATEWAY_STATUS_URL` | nodos (compose) | `http://gateway:8081/nginx_status` | `stub_status` interno de NGINX para el monitoreo; vacío = no se consulta |
 
 ---
 
-## 14. Decisiones de diseño, limitaciones y trabajo futuro
+## 15. Decisiones de diseño, limitaciones y trabajo futuro
 
 **Decisiones:**
 
@@ -807,6 +898,8 @@ El mismo comportamiento se verificó con **fallos reales** (`docker compose stop
   cual es adecuado para el volumen del proyecto pero no para millones de filas.
 - El gateway es un punto único de fallo (en producción: dos NGINX con IP virtual o el balanceador de la
   plataforma, p. ej. Traefik en Coolify).
+- Las métricas del monitoreo viven en memoria: se reinician con el nodo y cubren 15 minutos. No hay
+  alertas automáticas (el siguiente paso sería exportarlas a Prometheus/Grafana).
 - El límite de intentos de login es por nodo (en memoria): con 2 nodos el atacante tiene el doble de
   intentos. Un límite global necesitaría estado compartido (Redis o `limit_req` en el gateway).
 - El token vive en `localStorage` (simple y sin CSRF, pero legible ante un XSS; mitigado por la CSP).
@@ -814,6 +907,5 @@ El mismo comportamiento se verificó con **fallos reales** (`docker compose stop
 - Si la réplica cae de verdad mientras la primaria está "caída" por simulación, no se puede validar a
   ningún usuario y la orden de restaurar debe darse reiniciando los nodos.
 
-**Trabajo futuro:** panel de monitoreo de nodos y panel de administración de datos (usuarios y
-pedidos), notificaciones en tiempo real con WebSockets, cola de mensajes para la replicación (outbox), *streaming replication* con promoción
+**Trabajo futuro:** panel de administración de datos (usuarios y pedidos), notificaciones en tiempo real con WebSockets, cola de mensajes para la replicación (outbox), *streaming replication* con promoción
 automática, purga de *tombstones* y métricas (Prometheus/Grafana).

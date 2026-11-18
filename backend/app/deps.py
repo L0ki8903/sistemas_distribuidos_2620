@@ -7,6 +7,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from .chaos import ChaosState
 from .config import Settings
 from .database import DatabaseCluster
+from .metrics import NodeMetrics
 from .peers import PeerClient
 from .security import Actor, AuthenticationError, LoginRateLimiter, PermissionDeniedError, decode_access_token
 from .users import get_active_user
@@ -29,6 +30,10 @@ def get_cluster(request: Request) -> DatabaseCluster:
 
 def get_peers(request: Request) -> PeerClient:
     return request.app.state.peers
+
+
+def get_metrics(request: Request) -> NodeMetrics:
+    return request.app.state.metrics
 
 
 def get_rate_limiter(request: Request) -> LoginRateLimiter:
