@@ -32,7 +32,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const browser = await puppeteer.launch({
   executablePath: CHROME,
   headless: true,
-  args: ["--no-sandbox", "--hide-scrollbars"],
+  args: ["--no-sandbox", "--disable-dev-shm-usage", "--hide-scrollbars"],
   defaultViewport: { width: 1440, height: 1000 },
 });
 const page = await browser.newPage();

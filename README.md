@@ -1,5 +1,7 @@
 # Sistema Distribuido de Gestión de Pedidos Tolerante a Fallos
 
+[![CI](https://github.com/samue1-pineda/sistemas_distribuidos_2620/actions/workflows/ci.yml/badge.svg)](https://github.com/samue1-pineda/sistemas_distribuidos_2620/actions/workflows/ci.yml)
+
 Proyecto final de Sistemas Distribuidos (`sistemas_distribuidos_2620`). Aplicación web que **crea,
 lista, actualiza y elimina pedidos** y **sigue funcionando cuando falla un nodo de aplicación o la base
 de datos principal**, gracias a balanceo con failover, replicación de datos y reconciliación automática.
@@ -37,6 +39,7 @@ frontend/    Dashboard React 18 + Vite
 nginx/       nginx.conf (upstream + failover) y Dockerfile multi-stage (build React → nginx:alpine)
 database/    init.sql (tabla orders + 3 pedidos de ejemplo) y Dockerfile de PostgreSQL 16
 e2e-ui/      Prueba de interfaz con Chrome headless (genera las capturas de docs/img)
+.github/     Workflow de GitHub Actions (pytest, PostgreSQL, build y clúster completo)
 docs/        01_manual_tecnico.md · 02_manual_usuario.md · 03_informe_pruebas.md · img/
 .claude/     Comandos de Claude Code: /verify-cluster · /run-qa · /generate-docs
 ```
@@ -136,6 +139,20 @@ cd ../e2e-ui && npm install && node ui-test.mjs                         # interf
 Resultados: **15/15** (SQLite y PostgreSQL 16), **4/4** e2e, **26/26** de interfaz. Ver
 [Informe de Pruebas](docs/03_informe_pruebas.md).
 
+### Integración continua (GitHub Actions)
+
+`.github/workflows/ci.yml` se ejecuta en cada push a `main` y en cada pull request:
+
+| Job | Qué hace |
+|-----|----------|
+| `backend` | pytest en Python 3.11 con dos SQLite temporales |
+| `backend-postgres` | La misma suite contra dos PostgreSQL 16 reales (service containers) |
+| `frontend` | `npm ci` + build de producción de Vite |
+| `cluster` | `docker compose up --build --wait` de los 5 contenedores, pytest e2e vía NGINX y prueba de interfaz con Chrome. Las capturas quedan como artefacto `capturas-interfaz` |
+
+Si el job `cluster` pasa, las mismas imágenes que construirá Coolify arrancan y superan las pruebas de
+fallo.
+
 ## Despliegue en Coolify
 
 El `docker-compose.yml` ya es compatible: el gateway escucha en el puerto interno **80** (`expose: 80`)
@@ -163,6 +180,10 @@ imagen (sin *bind mounts*) y el archivo no usa anclas YAML.
    enruta al puerto interno 80. Los demás servicios **no** llevan dominio.
 5. **Deploy** y comprobar `https://<dominio>/api/health`, el dashboard y `https://<dominio>/api/docs`.
 6. Validar contra el despliegue: `cd backend && CLUSTER_BASE_URL=https://<dominio> python -m pytest tests/test_cluster_e2e.py -v`.
+
+**Error frecuente:** `Bind for 0.0.0.0:8080 failed: port is already allocated` al arrancar
+`gateway-…`. Algo del servidor ya usa el 8080 (normalmente Traefik). Define `GATEWAY_PORT` con un
+puerto libre en *Environment Variables* y pulsa **Redeploy**; no hace falta tocar el código.
 
 Notas: los volúmenes `pg_primary_data` y `pg_replica_data` persisten entre despliegues (para volver a
 los datos de ejemplo hay que borrarlos). El frontend usa rutas relativas `/api/...`, así que funciona
