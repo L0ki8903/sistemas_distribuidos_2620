@@ -1,6 +1,6 @@
 # Manual Técnico — Sistema Distribuido de Gestión de Pedidos Tolerante a Fallos
 
-> Proyecto final de Sistemas Distribuidos · Versión 1.0.0 · Noviembre de 2026
+> Proyecto final de Sistemas Distribuidos · Versión 1.1.0 (autenticación y seguridad) · Noviembre de 2026
 
 ## Contenido
 
@@ -11,12 +11,13 @@
 5. [Flujo de datos](#5-flujo-de-datos)
 6. [Mecanismos de tolerancia a fallos](#6-mecanismos-de-tolerancia-a-fallos)
 7. [Diagramas de secuencia de fallos](#7-diagramas-de-secuencia-de-fallos)
-8. [Modelo de datos y máquina de estados](#8-modelo-de-datos-y-máquina-de-estados)
-9. [Referencia de la API](#9-referencia-de-la-api)
-10. [Ejemplo de fallo simulado paso a paso](#10-ejemplo-de-fallo-simulado-paso-a-paso)
-11. [Tecnologías empleadas y justificación](#11-tecnologías-empleadas-y-justificación)
-12. [Variables de entorno](#12-variables-de-entorno)
-13. [Decisiones de diseño, limitaciones y trabajo futuro](#13-decisiones-de-diseño-limitaciones-y-trabajo-futuro)
+8. [Autenticación y seguridad](#8-autenticación-y-seguridad)
+9. [Modelo de datos y máquina de estados](#9-modelo-de-datos-y-máquina-de-estados)
+10. [Referencia de la API](#10-referencia-de-la-api)
+11. [Ejemplo de fallo simulado paso a paso](#11-ejemplo-de-fallo-simulado-paso-a-paso)
+12. [Tecnologías empleadas y justificación](#12-tecnologías-empleadas-y-justificación)
+13. [Variables de entorno](#13-variables-de-entorno)
+14. [Decisiones de diseño, limitaciones y trabajo futuro](#14-decisiones-de-diseño-limitaciones-y-trabajo-futuro)
 
 ---
 
@@ -33,6 +34,9 @@ componentes individuales**. Para lograrlo combina tres capas de redundancia:
 
 Además incluye **Chaos Engineering**: desde el dashboard o la API se puede "tumbar" un nodo o la base
 primaria en caliente para demostrar el comportamiento ante fallos.
+
+Desde la versión 1.1 el acceso está **autenticado** (JWT) y **autorizado por roles** (`user` = cliente,
+`admin` = operador). La sesión sigue funcionando aunque caiga un nodo o la base primaria (§8).
 
 ---
 
@@ -55,7 +59,8 @@ privada). El cliente sólo conoce el gateway; los nodos y las bases no se public
   `http://localhost:8000`).
 - Gateway ⇄ nodos: HTTP/1.1 con keep-alive (`upstream backend_cluster`).
 - Nodo ⇄ nodo: **REST entre nodos** para reenviar órdenes de caos al nodo destino y construir la
-  vista del clúster (`/api/chaos/local`, `/api/chaos/crash/{nodo}`, `/api/chaos/db-primary`).
+  vista del clúster (`/api/chaos/local`, `/api/chaos/crash/{nodo}`, `/api/chaos/db-primary`). El
+  reenvío lleva la misma cabecera `Authorization` del administrador que dio la orden (§8.1).
 - Nodos ⇄ bases: SQLAlchemy 2 + psycopg 3, con *timeouts* de conexión (2 s) y de sentencia (5 s).
 
 ---
@@ -97,23 +102,29 @@ flowchart LR
 ├── backend/                     Nodo FastAPI (se construye una imagen y corre 2 veces)
 │   ├── app/
 │   │   ├── main.py              create_app(): middleware de caos, cabecera X-Handled-By-Node, errores
-│   │   ├── config.py            Settings desde variables de entorno (NODE_ID, URLs, PEERS…)
+│   │   ├── config.py            Settings desde variables de entorno (NODE_ID, URLs, PEERS, JWT…)
+│   │   ├── security.py          PBKDF2, emisión/validación de JWT, límite de intentos de login
+│   │   ├── users.py             Reglas de usuarios: registro, búsqueda, administrador inicial
+│   │   ├── bootstrap.py         Crea el administrador inicial al arrancar (id determinista)
+│   │   ├── cli.py               python -m app.cli create-admin (crear/restablecer administradores)
 │   │   ├── database.py          DatabaseCluster: doble sesión, escritura dual, failover,
 │   │   │                        circuit breaker y reconciliación
-│   │   ├── services.py          Reglas de negocio: CRUD, máquina de estados, total, idempotencia
-│   │   ├── models.py            Modelo SQLAlchemy Order (UTCDateTime, JSON/JSONB)
+│   │   ├── services.py          Reglas de negocio: CRUD, máquina de estados, permisos por rol, idempotencia
+│   │   ├── models.py            Modelos Order y User (UTCDateTime, JSON/JSONB), migraciones aditivas
 │   │   ├── schemas.py           Esquemas Pydantic v2 de entrada/salida
 │   │   ├── chaos.py             Banderas SIMULATE_CRASH / SIMULATE_DB_PRIMARY_DOWN
 │   │   ├── peers.py             Cliente REST entre nodos (httpx)
-│   │   └── routers/             orders.py · chaos.py · system.py
-│   ├── tests/                   test_orders.py (15 casos) · test_cluster_e2e.py (4 casos)
+│   │   ├── deps.py              Dependencias FastAPI: sesión (get_current_actor) y require_admin
+│   │   └── routers/             auth.py · orders.py · chaos.py · system.py
+│   ├── tests/                   test_orders.py (15) · test_auth.py (13) · test_cluster_e2e.py (5)
 │   └── Dockerfile, requirements*.txt, pytest.ini
 ├── frontend/                    React 18 + Vite (dashboard logístico)
-│   └── src/ App.jsx · api.js · format.js · components/ (ClusterPanel, OrderForm, OrdersTable,
-│                                RequestLog, Toasts) · styles.css
-├── nginx/                       nginx.conf (upstream + failover) · Dockerfile multi-stage
-├── database/                    init.sql (tabla + 3 pedidos) · Dockerfile
+│   └── src/ App.jsx (puerta de sesión) · Dashboard.jsx · auth.js · api.js · format.js ·
+│            components/ (LoginPage, ClusterPanel, OrderForm, OrdersTable, RequestLog, Toasts) · styles.css
+├── nginx/                       nginx.conf (upstream + failover) · security-headers.conf · Dockerfile multi-stage
+├── database/                    init.sql (tablas orders/users + 3 pedidos) · Dockerfile
 ├── e2e-ui/                      Prueba de interfaz con Chrome (puppeteer-core) + capturas
+├── .github/workflows/ci.yml     Integración continua (pytest SQLite/PostgreSQL, build, clúster completo)
 ├── docs/                        Manuales e informe de pruebas (img/ = capturas)
 └── docker-compose.yml
 ```
@@ -177,7 +188,7 @@ proxy_next_upstream error timeout http_500 http_502 http_503 http_504 non_idempo
 proxy_next_upstream_tries 2;
 ```
 
-- **Round-Robin** reparte las peticiones alternando nodos (evidencia: §10).
+- **Round-Robin** reparte las peticiones alternando nodos (evidencia: §11).
 - Si un nodo **no acepta la conexión, excede el timeout o responde 5xx**, NGINX **reintenta la misma
   petición en el otro nodo** y el cliente recibe la respuesta buena. Tras un fallo, el nodo queda
   excluido 10 s (`max_fails=1 fail_timeout=10s`) y luego se vuelve a probar con tráfico real.
@@ -288,6 +299,8 @@ cliente), sin coordinación.
 | Ambas bases caídas | Excepción en ambas | `503` JSON controlado | Mensaje de error claro, nunca `500` |
 | Orden de caos llega al nodo equivocado | `target_node ≠ NODE_ID` | Reenvío REST al nodo destino | Transparente |
 | Reintento de `POST` tras timeout | `id` ya existente | Devuelve el pedido existente | Sin duplicados |
+| Cae el nodo que emitió el token | — | El otro nodo valida el JWT con el secreto compartido | La sesión sigue abierta |
+| Petición sin sesión o con token inválido | Firma/expiración del JWT | `401` (NGINX no la reintenta) | Vuelve a la pantalla de inicio de sesión |
 
 ---
 
@@ -344,9 +357,124 @@ sequenceDiagram
 
 ---
 
-## 8. Modelo de datos y máquina de estados
+## 8. Autenticación y seguridad
 
-### 8.1 Tabla `orders` (idéntica en `db-primary` y `db-replica`)
+### 8.1 Sesión distribuida sin estado (JWT)
+
+Detrás de un balanceador Round-Robin, dos peticiones seguidas del mismo usuario llegan a nodos
+distintos, y cualquiera de ellos puede caer. Por eso la sesión **no se guarda en ningún nodo**:
+
+- `POST /api/auth/login` verifica la contraseña y devuelve un **JWT HS256** con `sub` (id del usuario),
+  `username`, `role`, `iat`, `exp` (8 h por defecto), `iss` y `jti`.
+- Los dos nodos comparten `JWT_SECRET`, así que **cualquier nodo valida un token emitido por otro**
+  sin consultar al nodo emisor. Si un nodo cae, la sesión continúa en el otro.
+- En cada petición, además de la firma y la expiración, el nodo comprueba en la base de datos (con
+  failover a la réplica) que el usuario **siga activo** y lee su **rol actual**. Desactivar una cuenta o
+  cambiar su rol tiene efecto inmediato aunque el token siga vigente.
+- La lista de algoritmos es fija (`HS256`), lo que impide el ataque `alg=none`.
+- El reenvío de órdenes de caos entre nodos incluye la cabecera `Authorization` original: el nodo
+  destino vuelve a validar que la orden viene de un administrador.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as Navegador
+    participant G as NGINX
+    participant A as Nodo-Alpha-01
+    participant B as Nodo-Beta-02
+    participant P as db-primary
+    participant R as db-replica
+    C->>G: POST /api/auth/login {usuario, contraseña}
+    G->>A: turno Round-Robin
+    A-xP: SELECT usuario (primaria caída)
+    A->>R: SELECT usuario (failover)
+    Note over A: verifica PBKDF2 y firma el JWT<br/>con JWT_SECRET compartido
+    A-->>C: 200 {access_token, db_used: "replica_failover"}
+    C->>G: GET /api/orders (Authorization: Bearer token)
+    G->>B: siguiente turno
+    Note over B: valida firma y expiración<br/>sin preguntar a Alpha
+    B->>R: ¿usuario activo? rol actual (failover)
+    B-->>C: 200 · sólo los pedidos de ese usuario
+```
+
+### 8.2 Usuarios replicados
+
+La tabla `users` (§9.2) se trata exactamente igual que `orders`: **escritura dual**, **failover** y
+**reconciliación last-write-wins**. Por eso se puede **registrar e iniciar sesión con la primaria
+caída**, y las cuentas creadas durante la caída se copian a la primaria al recuperarse (prueba S-10 del
+informe). Si durante una partición se creara el mismo `username` en ambas bases con ids distintos, la
+reconciliación registra un **conflicto** para esa fila (`conflicts` en la respuesta de sync) sin
+bloquear el resto.
+
+El **administrador inicial** se crea al arrancar si no existe (`ADMIN_USERNAME`/`ADMIN_PASSWORD`). Los
+dos nodos le asignan el **mismo id determinista** (UUID v5 del nombre de usuario): si arrancan a la vez,
+la clave primaria impide que haya dos administradores. Si `ADMIN_PASSWORD` está vacío se genera una
+contraseña aleatoria que se muestra una sola vez en el log. Para crear o restablecer administradores:
+
+```bash
+docker compose exec backend-node-1 python -m app.cli create-admin --username admin --password 'NuevaClave2026'
+```
+
+### 8.3 Roles y permisos
+
+Los permisos se aplican **en el servidor** (`services.py`, `deps.py`); la interfaz sólo oculta lo que
+el usuario no puede hacer.
+
+| Acción | Sin sesión | `user` (cliente) | `admin` |
+|--------|:----------:|------------------|---------|
+| `GET /api/health` | ✅ | ✅ | ✅ |
+| Registrarse / iniciar sesión | ✅ | — | — |
+| Listar / ver pedidos | 401 | sólo los suyos (ajenos → 404) | todos, con `owner_username` |
+| Crear pedido | 401 | ✅ (queda como dueño) | ✅ |
+| Editar cliente / ítems | 401 | los suyos en `pendiente` | en `pendiente` |
+| Cambiar estado | 401 | 403 | ✅ |
+| Eliminar | 401 | cancelar los suyos en `pendiente` | cualquiera |
+| Caos (`/api/chaos/*`) y replicación (`/api/replication/*`) | 401 | 403 | ✅ |
+
+Un pedido ajeno se responde como **inexistente (404)** para no revelar que existe. El registro sólo
+crea cuentas `user`: el campo `role` no se acepta (422), así que nadie puede autoasignarse `admin`.
+
+### 8.4 Contraseñas y fuerza bruta
+
+- **PBKDF2-SHA256** con sal aleatoria de 16 bytes y **600 000 iteraciones** (recomendación OWASP), de la
+  biblioteca estándar. Formato: `pbkdf2_sha256$<iteraciones>$<sal>$<hash>`. Se compara en tiempo
+  constante (`hmac.compare_digest`) y el hash nunca sale de la API.
+- Política mínima: 8–128 caracteres, con letras y números. El usuario se normaliza a minúsculas.
+- El mismo mensaje y el mismo tiempo de respuesta para "usuario inexistente" y "contraseña incorrecta"
+  (se ejecuta un PBKDF2 ficticio), para no permitir **enumerar usuarios**.
+- **Límite de intentos**: 5 fallos en 5 minutos por (usuario, IP) devuelven **429** con `Retry-After`.
+  El contador vive en la memoria de cada nodo (limitación en §14).
+- El hash se calcula **fuera de la transacción** para no retener conexiones a la base.
+
+### 8.5 Seguridad en el gateway
+
+`nginx/security-headers.conf` se incluye en cada `location`:
+
+| Cabecera | Valor | Protege contra |
+|----------|-------|----------------|
+| `Content-Security-Policy` (sólo la app React) | `default-src 'self'; script-src 'self'; style-src 'self'; …; frame-ancestors 'none'` | Inyección de scripts (XSS) y estilos |
+| `X-Content-Type-Options` | `nosniff` | Interpretación errónea de tipos MIME |
+| `X-Frame-Options` | `DENY` | Clickjacking |
+| `Referrer-Policy` | `strict-origin-when-cross-origin` | Fuga de URLs |
+| `Permissions-Policy` | sin cámara, micrófono ni ubicación | Abuso de APIs del navegador |
+
+Además: `client_max_body_size 1m`, `server_tokens off`, y ya no se envía `X-Upstream-Addr` (revelaba IPs
+internas). Los `401`/`403` **no** están en `proxy_next_upstream`: no son fallos del nodo y no se
+reintentan. En producción (Coolify) Traefik termina HTTPS; la app no necesita cambios.
+
+### 8.6 Migración de instalaciones existentes
+
+Las bases creadas con la versión 1.0 no tienen `users` ni `orders.owner_id`. Al arrancar, cada nodo:
+crea las tablas que falten, aplica migraciones aditivas (`ALTER TABLE … ADD COLUMN`) y crea los índices,
+todo dentro de un **`pg_advisory_xact_lock`** para que los dos nodos no migren a la vez. Si una base
+está caída al arrancar, la migración se reintenta en la reconciliación periódica cuando vuelve. Los
+pedidos existentes quedan con `owner_id = NULL` (sólo visibles para el administrador).
+
+---
+
+## 9. Modelo de datos y máquina de estados
+
+### 9.1 Tabla `orders` (idéntica en `db-primary` y `db-replica`)
 
 | Columna | Tipo PostgreSQL | Descripción |
 |---------|-----------------|-------------|
@@ -359,11 +487,24 @@ sequenceDiagram
 | `updated_at` | `TIMESTAMPTZ` | Versión de la fila para last-write-wins |
 | `deleted_at` | `TIMESTAMPTZ NULL` | Tombstone del borrado lógico |
 | `handled_by_node` | `VARCHAR(50)` | Nodo que procesó la última escritura (`init.sql` en los datos de ejemplo) |
+| `owner_id` | `VARCHAR(36) NULL` | Usuario dueño del pedido (sin FK a propósito: las tablas se reconcilian por separado) |
 
-Índices: `ix_orders_status`, `ix_orders_updated_at`. `database/init.sql` crea la tabla y **3 pedidos de
+Índices: `ix_orders_status`, `ix_orders_updated_at`, `ix_orders_owner_id`. `database/init.sql` crea la tabla y **3 pedidos de
 ejemplo con IDs y fechas fijos**, para que ambas bases arranquen idénticas.
 
-### 8.2 Máquina de estados
+### 9.2 Tabla `users` (idéntica en ambas bases)
+
+| Columna | Tipo PostgreSQL | Descripción |
+|---------|-----------------|-------------|
+| `id` | `VARCHAR(36)` PK | UUID (el del administrador inicial es determinista) |
+| `username` | `VARCHAR(50)` `UNIQUE` | En minúsculas; 3–50 caracteres `[a-z0-9_.-]` |
+| `full_name` | `VARCHAR(120)` | Nombre visible |
+| `password_hash` | `VARCHAR(255)` | `pbkdf2_sha256$…` (nunca texto plano) |
+| `role` | `VARCHAR(10)` + `CHECK` | `user` · `admin` |
+| `is_active` | `BOOLEAN` | Una cuenta desactivada no puede iniciar sesión y pierde la sesión actual |
+| `created_at` / `updated_at` / `deleted_at` | `TIMESTAMPTZ` | Igual que en `orders`: versión LWW y tombstone |
+
+### 9.3 Máquina de estados
 
 ```mermaid
 stateDiagram-v2
@@ -388,36 +529,58 @@ Sólo se permite avanzar **al siguiente estado**. Saltar o retroceder devuelve *
 
 ---
 
-## 9. Referencia de la API
+## 10. Referencia de la API
 
 Documentación interactiva (Swagger): **`http://localhost:8080/api/docs`**.
 
-| Método | Ruta | Descripción | Respuestas |
-|--------|------|-------------|------------|
-| GET | `/api/health?deep=true` | Salud del nodo; con `deep` incluye ping a ambas BD, circuit breaker y última reconciliación | 200 |
-| GET | `/api/orders?status=&customer=` | Lista pedidos activos (filtros opcionales) | 200, 503 |
-| GET | `/api/orders/{id}` | Obtiene un pedido | 200, 404, 503 |
-| POST | `/api/orders` | Crea un pedido (estado inicial `pendiente`) | 201, 200 (replay idempotente), 409, 422, 503 |
-| PATCH | `/api/orders/{id}` | Cambia `status` y/o edita `customer_name`/`items` | 200, 404, 409, 422, 503 |
-| DELETE | `/api/orders/{id}` | Borrado lógico | 200, 404, 503 |
-| GET | `/api/chaos/status` | Vista del clúster: nodos (vía REST), banderas y estado de las BD | 200 |
-| GET | `/api/chaos/local` | Banderas de caos de **este** nodo (usado entre nodos) | 200 |
-| POST | `/api/chaos/toggle` | Alterna `SIMULATE_CRASH` en el nodo que recibe la petición | 200 |
-| POST | `/api/chaos/toggle/{nodo}` | Alterna `SIMULATE_CRASH` en un nodo concreto (reenvío REST) | 200, 404, 409 |
-| PUT | `/api/chaos/crash/{nodo}` | Fija `SIMULATE_CRASH` (`{"enabled": bool}`), idempotente | 200, 404, 409 |
-| POST | `/api/chaos/db-primary/toggle` | Alterna `SIMULATE_DB_PRIMARY_DOWN` en todo el clúster | 200 |
-| PUT | `/api/chaos/db-primary` | Fija `SIMULATE_DB_PRIMARY_DOWN` (`{"enabled": bool}`) en todo el clúster | 200 |
-| GET | `/api/replication/status` | Filas por base, `in_sync`, `divergent_orders` | 200 |
-| POST | `/api/replication/sync` | Fuerza la reconciliación | 200 |
+| Método | Ruta | Descripción | Acceso | Respuestas |
+|--------|------|-------------|--------|------------|
+| GET | `/api/health?deep=true` | Salud del nodo; con `deep` incluye ping a ambas BD | público | 200 |
+| POST | `/api/auth/register` | Crear cuenta de cliente (`username`, `full_name`, `password`) y obtener token | público | 201, 403 (registro deshabilitado), 409, 422 |
+| POST | `/api/auth/login` | Iniciar sesión → `{access_token, token_type, expires_in, user}` | público | 200, 401, 403 (cuenta desactivada), 429 |
+| GET | `/api/auth/me` | Usuario de la sesión actual | sesión | 200, 401 |
+| GET | `/api/orders?status=&customer=` | Lista pedidos (cliente: los suyos; admin: todos) | sesión | 200, 401, 503 |
+| GET | `/api/orders/{id}` | Obtiene un pedido | sesión (dueño o admin) | 200, 401, 404, 503 |
+| POST | `/api/orders` | Crea un pedido (estado inicial `pendiente`, dueño = usuario) | sesión | 201, 200 (replay idempotente), 401, 409, 422, 503 |
+| PATCH | `/api/orders/{id}` | Edita `customer_name`/`items` (dueño o admin, en `pendiente`) o cambia `status` (admin) | sesión | 200, 401, 403, 404, 409, 422, 503 |
+| DELETE | `/api/orders/{id}` | Borrado lógico (admin: cualquiera; cliente: los suyos en `pendiente`) | sesión | 200, 401, 404, 409, 503 |
+| GET | `/api/chaos/status` | Vista del clúster: nodos (vía REST), banderas y estado de las BD | admin | 200, 401, 403 |
+| GET | `/api/chaos/local` | Banderas de caos de **este** nodo (usado entre nodos) | admin | 200 |
+| POST | `/api/chaos/toggle` | Alterna `SIMULATE_CRASH` en el nodo que recibe la petición | admin | 200 |
+| POST | `/api/chaos/toggle/{nodo}` | Alterna `SIMULATE_CRASH` en un nodo concreto (reenvío REST) | admin | 200, 404, 409 |
+| PUT | `/api/chaos/crash/{nodo}` | Fija `SIMULATE_CRASH` (`{"enabled": bool}`), idempotente | admin | 200, 404, 409 |
+| POST | `/api/chaos/db-primary/toggle` | Alterna `SIMULATE_DB_PRIMARY_DOWN` en todo el clúster | admin | 200 |
+| PUT | `/api/chaos/db-primary` | Fija `SIMULATE_DB_PRIMARY_DOWN` (`{"enabled": bool}`) en todo el clúster | admin | 200 |
+| GET | `/api/replication/status` | Filas por base y tabla, `in_sync`, `divergent_by_table` | admin | 200 |
+| POST | `/api/replication/sync` | Fuerza la reconciliación (por tabla en `tables`) | admin | 200 |
+
+Las rutas con sesión requieren `Authorization: Bearer <access_token>`. En Swagger (`/api/docs`) se usa
+el botón **Authorize**.
 
 **Cabeceras de respuesta:** `X-Handled-By-Node` (todas), `X-DB-Used` y `X-Replication` (pedidos),
-`X-Idempotent-Replay` (POST repetido), `Retry-After` (503 de caos), `X-Upstream-Status` y
-`X-Upstream-Addr` (añadidas por NGINX).
+`X-Idempotent-Replay` (POST repetido), `Retry-After` (503 de caos y 429 de login), `WWW-Authenticate`
+(401) y `X-Upstream-Status` (añadida por NGINX).
 
-Ejemplo — crear un pedido:
+Ejemplo — iniciar sesión (respuesta real; el token se recorta):
+
+```json
+{
+  "access_token": "eyJhbGciOiJIUzI1NiIsInR5…",
+  "token_type": "bearer",
+  "expires_in": 28800,
+  "user": {"id": "6981265a-39f7-4ef8-a173-4b760b032d25", "username": "ana.torres",
+           "full_name": "Ana Torres", "role": "user", "is_active": true,
+           "created_at": "2026-11-18T07:03:39.075525Z"},
+  "node": "Nodo-Beta-02",
+  "db_used": "primary"
+}
+```
+
+Ejemplo — crear un pedido con ese token (lo atendió **otro nodo**, Alpha, sin problema):
 
 ```http
 POST /api/orders
+Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5…
 Content-Type: application/json
 
 {"id": "6f1c0e8a-3b1e-4c55-9a51-2d1f0b7c9e10",
@@ -428,7 +591,7 @@ Content-Type: application/json
 
 ```json
 {
-  "node": "Nodo-Beta-02",
+  "node": "Nodo-Alpha-01",
   "db_used": "primary",
   "replication": "synced",
   "data": {
@@ -439,14 +602,22 @@ Content-Type: application/json
     "total": 1251.0,
     "status": "pendiente",
     "next_status": "en proceso",
-    "created_at": "2026-11-18T04:39:10.182277Z",
-    "updated_at": "2026-11-18T04:39:10.182277Z",
-    "handled_by_node": "Nodo-Beta-02"
+    "created_at": "2026-11-18T07:03:39.271783Z",
+    "updated_at": "2026-11-18T07:03:39.271783Z",
+    "handled_by_node": "Nodo-Alpha-01",
+    "owner_id": "6981265a-39f7-4ef8-a173-4b760b032d25",
+    "owner_username": null
   }
 }
 ```
 
-Ejemplo — transición inválida (`pendiente → enviado`):
+Ejemplo — un cliente intenta cambiar el estado (sólo admin):
+
+```json
+{"detail": "Sólo un administrador puede cambiar el estado de un pedido", "node": "Nodo-Beta-02"}
+```
+
+Ejemplo — transición inválida (`pendiente → enviado`, como admin):
 
 ```json
 {"detail": "Transición inválida 'pendiente' -> 'enviado': el único estado siguiente permitido es 'en proceso'",
@@ -455,9 +626,17 @@ Ejemplo — transición inválida (`pendiente → enviado`):
 
 ---
 
-## 10. Ejemplo de fallo simulado paso a paso
+## 11. Ejemplo de fallo simulado paso a paso
 
-Salidas **reales** obtenidas contra el clúster local (`BASE=http://localhost:8080`).
+Salidas **reales** obtenidas contra el clúster local (`BASE=http://localhost:8080`) con la versión 1.0.
+Desde la 1.1 los endpoints de pedidos y de caos exigen sesión de administrador; basta con añadir el token
+a cada `curl` (el comportamiento ante fallos es idéntico):
+
+```bash
+TOKEN=$(curl -s -X POST $BASE/api/auth/login -H 'Content-Type: application/json' \
+  -d '{"username":"admin","password":"<ADMIN_PASSWORD>"}' | python -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+alias curl='curl -H "Authorization: Bearer $TOKEN"'
+```
 
 **1) Estado normal — Round-Robin alterna los nodos:**
 
@@ -558,7 +737,7 @@ El mismo comportamiento se verificó con **fallos reales** (`docker compose stop
 
 ---
 
-## 11. Tecnologías empleadas y justificación
+## 12. Tecnologías empleadas y justificación
 
 | Tecnología | Versión | Uso | Justificación |
 |------------|---------|-----|---------------|
@@ -568,6 +747,8 @@ El mismo comportamiento se verificó con **fallos reales** (`docker compose stop
 | psycopg | 3.3 | Driver PostgreSQL | Driver moderno, `connect_timeout` y opciones de sesión para acotar la espera ante caídas |
 | Pydantic | v2 | Esquemas de entrada/salida | Validación estricta (`extra="forbid"`), mensajes 422 claros |
 | httpx | 0.28 | Cliente REST entre nodos y tests | API síncrona simple; `TestClient` de FastAPI se basa en él |
+| PyJWT | 2.15 | Tokens de sesión | Librería pequeña, pura Python y auditada; algoritmo fijo HS256 y validación de `exp`/`iss` |
+| hashlib (PBKDF2) | stdlib | Hash de contraseñas | Recomendado por OWASP; sin dependencias compiladas |
 | Pytest | 9.2 | Pruebas | Fixtures para levantar el sistema con dos bases SQLite temporales o PostgreSQL real |
 | PostgreSQL | 16 | Bases primaria y réplica | Requisito; `JSONB`, `TIMESTAMPTZ`, `CHECK`, `SELECT … FOR UPDATE`, `ON CONFLICT` |
 | NGINX | 1.28 | Gateway / balanceador | Round-Robin y failover pasivo nativos (`proxy_next_upstream`), re-resolución DNS (`resolve`), sirve estáticos de forma eficiente |
@@ -577,7 +758,7 @@ El mismo comportamiento se verificó con **fallos reales** (`docker compose stop
 
 ---
 
-## 12. Variables de entorno
+## 13. Variables de entorno
 
 | Variable | Dónde | Valor por defecto | Descripción |
 |----------|-------|-------------------|-------------|
@@ -593,10 +774,16 @@ El mismo comportamiento se verificó con **fallos reales** (`docker compose stop
 | `DB_CONNECT_TIMEOUT` | nodos | `2` | Timeout de conexión a PostgreSQL (s) |
 | `BREAKER_COOLDOWN_SECONDS` | nodos | `5` | Tiempo que el circuit breaker evita la primaria tras un fallo real |
 | `PEER_TIMEOUT_SECONDS` | nodos | `1.5` | Timeout de las llamadas REST entre nodos |
+| `JWT_SECRET` | `.env` / nodos | valor de desarrollo (avisa en el log) | Secreto HS256; **largo, aleatorio e igual en ambos nodos** |
+| `JWT_EXPIRES_MINUTES` | `.env` / nodos | `480` | Duración de la sesión |
+| `ADMIN_USERNAME` / `ADMIN_PASSWORD` | `.env` / nodos | `admin` / vacío (se genera) | Administrador inicial; sólo se usan si aún no existe |
+| `ALLOW_REGISTRATION` | `.env` / nodos | `true` | Permite crear cuentas de cliente desde el login |
+| `PASSWORD_HASH_ITERATIONS` | nodos | `600000` | Iteraciones PBKDF2 para hashes nuevos |
+| `LOGIN_MAX_FAILURES` / `LOGIN_WINDOW_SECONDS` | nodos | `5` / `300` | Bloqueo temporal por intentos fallidos |
 
 ---
 
-## 13. Decisiones de diseño, limitaciones y trabajo futuro
+## 14. Decisiones de diseño, limitaciones y trabajo futuro
 
 **Decisiones:**
 
@@ -620,8 +807,13 @@ El mismo comportamiento se verificó con **fallos reales** (`docker compose stop
   cual es adecuado para el volumen del proyecto pero no para millones de filas.
 - El gateway es un punto único de fallo (en producción: dos NGINX con IP virtual o el balanceador de la
   plataforma, p. ej. Traefik en Coolify).
-- No hay autenticación: los endpoints de caos son públicos (pensados para la demostración).
+- El límite de intentos de login es por nodo (en memoria): con 2 nodos el atacante tiene el doble de
+  intentos. Un límite global necesitaría estado compartido (Redis o `limit_req` en el gateway).
+- El token vive en `localStorage` (simple y sin CSRF, pero legible ante un XSS; mitigado por la CSP).
+  Alternativa: cookie `HttpOnly` + protección CSRF. No hay *refresh tokens*: al expirar se vuelve a entrar.
+- Si la réplica cae de verdad mientras la primaria está "caída" por simulación, no se puede validar a
+  ningún usuario y la orden de restaurar debe darse reiniciando los nodos.
 
-**Trabajo futuro:** autenticación y roles (cliente/administrador), notificaciones en tiempo real con
-WebSockets, cola de mensajes para la replicación (outbox), *streaming replication* con promoción
+**Trabajo futuro:** panel de monitoreo de nodos y panel de administración de datos (usuarios y
+pedidos), notificaciones en tiempo real con WebSockets, cola de mensajes para la replicación (outbox), *streaming replication* con promoción
 automática, purga de *tombstones* y métricas (Prometheus/Grafana).

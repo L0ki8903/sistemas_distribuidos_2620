@@ -34,10 +34,14 @@ class PeerClient:
         headers = {FORWARDED_HEADER: origin_node, **kwargs.pop("headers", {})}
         return self.client.request(method, f"{peer.url}{path}", headers=headers, **kwargs)
 
-    def local_state(self, peer: Peer, origin_node: str) -> dict[str, Any]:
+    def local_state(self, peer: Peer, origin_node: str, headers: dict[str, str] | None = None) -> dict[str, Any]:
         """Estado de caos de un peer; si no responde se marca como inalcanzable."""
         try:
-            response = self.request(peer, "GET", "/api/chaos/local", origin_node)
+            response = self.request(peer, "GET", "/api/chaos/local", origin_node, headers=headers or {})
+            if response.status_code in (401, 403):
+                raise httpx.HTTPError(
+                    f"el nodo rechazó la autenticación (HTTP {response.status_code}): ¿JWT_SECRET distinto entre nodos?"
+                )
             response.raise_for_status()
             data = response.json()
             if peer.name and data.get("node") != peer.name:

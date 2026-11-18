@@ -1,23 +1,29 @@
 """Pruebas end-to-end contra el clúster Docker real (NGINX + 2 nodos + 2 PostgreSQL).
 
-Se omiten salvo que se defina ``CLUSTER_BASE_URL``, p. ej.::
+Se omiten salvo que se definan ``CLUSTER_BASE_URL`` y la contraseña del administrador, p. ej.::
 
-    CLUSTER_BASE_URL=http://localhost:8080 python -m pytest tests/test_cluster_e2e.py -v
+    CLUSTER_BASE_URL=http://localhost:8080 CLUSTER_ADMIN_PASSWORD=... python -m pytest tests/test_cluster_e2e.py -v
 """
 from __future__ import annotations
 
 import os
 import time
+import uuid
 
 import httpx
 import pytest
 
 BASE_URL = os.getenv("CLUSTER_BASE_URL")
+ADMIN_USER = os.getenv("CLUSTER_ADMIN_USER", "admin")
+ADMIN_PASSWORD = os.getenv("CLUSTER_ADMIN_PASSWORD")
 NODES = {"Nodo-Alpha-01", "Nodo-Beta-02"}
 
 pytestmark = [
     pytest.mark.cluster,
-    pytest.mark.skipif(not BASE_URL, reason="Define CLUSTER_BASE_URL (p. ej. http://localhost:8080) con el clúster arriba"),
+    pytest.mark.skipif(
+        not (BASE_URL and ADMIN_PASSWORD),
+        reason="Define CLUSTER_BASE_URL (p. ej. http://localhost:8080) y CLUSTER_ADMIN_PASSWORD con el clúster arriba",
+    ),
 ]
 
 ITEMS = [{"product": "Caja e2e", "quantity": 2, "unit_price": 10.0}]
@@ -33,9 +39,35 @@ def _reset(http: httpx.Client) -> None:
 @pytest.fixture
 def http():
     with httpx.Client(base_url=BASE_URL, timeout=15) as client:
+        response = client.post("/api/auth/login", json={"username": ADMIN_USER, "password": ADMIN_PASSWORD})
+        assert response.status_code == 200, response.text
+        client.headers["Authorization"] = f"Bearer {response.json()['access_token']}"
         _reset(client)
         yield client
         _reset(client)
+
+
+def test_e2e_sesion_valida_en_ambos_nodos_y_sin_reintentos_en_401(http):
+    username = f"e2e_{uuid.uuid4().hex[:8]}"
+    registered = http.post(
+        "/api/auth/register",
+        json={"username": username, "full_name": "Cliente E2E", "password": "ClienteE2E1"},
+        headers={"Authorization": ""},
+    )
+    assert registered.status_code == 201, registered.text
+    user_headers = {"Authorization": f"Bearer {registered.json()['access_token']}"}
+
+    seen = set()
+    for _ in range(6):  # el mismo token, validado por ambos nodos sin estado compartido
+        me = http.get("/api/auth/me", headers=user_headers)
+        assert me.status_code == 200 and me.json()["user"]["username"] == username
+        seen.add(me.headers["X-Handled-By-Node"])
+    assert seen == NODES
+
+    anonymous = http.get("/api/orders", headers={"Authorization": ""})
+    assert anonymous.status_code == 401
+    assert anonymous.headers["X-Upstream-Status"] == "401"  # NGINX no reintenta errores de autenticación
+    assert http.get("/api/chaos/status", headers=user_headers).status_code == 403
 
 
 def test_e2e_round_robin_alterna_entre_los_dos_nodos(http):

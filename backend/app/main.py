@@ -14,16 +14,20 @@ from . import __version__
 from .chaos import ChaosState
 from .config import Settings
 from .database import DatabaseCluster, DatabaseUnavailableError, describe_error
+from .bootstrap import bootstrap_admin
 from .peers import PeerClient
+from .routers import auth as auth_router
 from .routers import chaos as chaos_router
 from .routers import orders as orders_router
 from .routers import system as system_router
+from .security import AuthenticationError, LoginRateLimiter, PermissionDeniedError, TooManyAttemptsError
 from .services import (
     InvalidTransitionError,
     OrderIdConflictError,
     OrderNotEditableError,
     OrderNotFoundError,
 )
+from .users import UsernameTakenError
 
 logger = logging.getLogger("pedidos")
 CRASH_PROTECTED_PREFIX = "/api/orders"
@@ -56,10 +60,17 @@ def create_app(settings: Settings | None = None, peer_client: PeerClient | None 
     chaos = ChaosState(settings.node_id, settings.simulate_crash, settings.simulate_db_primary_down)
     cluster = DatabaseCluster(settings, chaos)
     peers = peer_client or PeerClient(settings.peers, settings.peer_timeout_seconds)
+    rate_limiter = LoginRateLimiter(settings.login_max_failures, settings.login_window_seconds)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         await asyncio.to_thread(cluster.ensure_schema)
+        await asyncio.to_thread(bootstrap_admin, cluster, settings)
+        if settings.jwt_secret_is_weak:
+            logger.warning(
+                "SEGURIDAD: JWT_SECRET es el valor por defecto o tiene menos de 32 caracteres. "
+                "Define un secreto largo y aleatorio (el MISMO en todos los nodos) antes de exponer el sistema."
+            )
         logger.info(
             "Nodo %s listo (peers=%s, sync cada %ss)",
             settings.node_id, [p.name or p.url for p in settings.peers], settings.sync_interval_seconds,
@@ -77,7 +88,10 @@ def create_app(settings: Settings | None = None, peer_client: PeerClient | None 
 
     app = FastAPI(
         title="Sistema Distribuido de Gestión de Pedidos",
-        description="Nodo backend tolerante a fallos (failover de BD, escritura dual y Chaos Engineering).",
+        description=(
+            "Nodo backend tolerante a fallos (failover de BD, escritura dual y Chaos Engineering). "
+            "Autenticación con JWT: usa POST /api/auth/login y el botón Authorize."
+        ),
         version=__version__,
         lifespan=lifespan,
         docs_url="/api/docs",
@@ -88,6 +102,7 @@ def create_app(settings: Settings | None = None, peer_client: PeerClient | None 
     app.state.chaos = chaos
     app.state.cluster = cluster
     app.state.peers = peers
+    app.state.rate_limiter = rate_limiter
 
     @app.middleware("http")
     async def node_identity_and_chaos(request: Request, call_next):
@@ -109,6 +124,26 @@ def create_app(settings: Settings | None = None, peer_client: PeerClient | None 
 
     def _error(status_code: int, detail: str, **extra) -> JSONResponse:
         return JSONResponse(status_code=status_code, content={"detail": detail, "node": settings.node_id, **extra})
+
+    @app.exception_handler(AuthenticationError)
+    async def _unauthenticated(_: Request, exc: AuthenticationError):
+        response = _error(401, str(exc))
+        response.headers["WWW-Authenticate"] = "Bearer"
+        return response
+
+    @app.exception_handler(PermissionDeniedError)
+    async def _forbidden(_: Request, exc: PermissionDeniedError):
+        return _error(403, str(exc))
+
+    @app.exception_handler(TooManyAttemptsError)
+    async def _too_many(_: Request, exc: TooManyAttemptsError):
+        response = _error(429, str(exc), retry_after=exc.retry_after)
+        response.headers["Retry-After"] = str(exc.retry_after)
+        return response
+
+    @app.exception_handler(UsernameTakenError)
+    async def _username_taken(_: Request, exc: UsernameTakenError):
+        return _error(409, str(exc))
 
     @app.exception_handler(OrderNotFoundError)
     async def _not_found(_: Request, exc: OrderNotFoundError):
@@ -141,6 +176,7 @@ def create_app(settings: Settings | None = None, peer_client: PeerClient | None 
         return _error(503, f"Error de base de datos: {describe_error(exc)}", db_used=None)
 
     app.include_router(system_router.router)
+    app.include_router(auth_router.router)
     app.include_router(orders_router.router)
     app.include_router(chaos_router.router)
     return app

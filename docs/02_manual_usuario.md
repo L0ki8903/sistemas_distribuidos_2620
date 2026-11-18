@@ -8,12 +8,13 @@
 1. [¿Qué es el sistema?](#1-qué-es-el-sistema)
 2. [Requisitos](#2-requisitos)
 3. [Instalación y ejecución](#3-instalación-y-ejecución)
-4. [Recorrido por la interfaz](#4-recorrido-por-la-interfaz)
-5. [Gestión de pedidos](#5-gestión-de-pedidos)
-6. [Cómo demostrar la tolerancia a fallos](#6-cómo-demostrar-la-tolerancia-a-fallos)
-7. [Uso desde el celular](#7-uso-desde-el-celular)
-8. [Preguntas frecuentes y solución de problemas](#8-preguntas-frecuentes-y-solución-de-problemas)
-9. [Glosario](#9-glosario)
+4. [Inicio de sesión y roles](#4-inicio-de-sesión-y-roles)
+5. [Recorrido por la interfaz](#5-recorrido-por-la-interfaz)
+6. [Gestión de pedidos](#6-gestión-de-pedidos)
+7. [Cómo demostrar la tolerancia a fallos](#7-cómo-demostrar-la-tolerancia-a-fallos)
+8. [Uso desde el celular](#8-uso-desde-el-celular)
+9. [Preguntas frecuentes y solución de problemas](#9-preguntas-frecuentes-y-solución-de-problemas)
+10. [Glosario](#10-glosario)
 
 ---
 
@@ -35,7 +36,7 @@ tiene botones para **simular caídas** y comprobar que el sistema sigue funciona
 |-----------|---------|
 | Docker Desktop (Windows/macOS) o Docker Engine + Compose (Linux) | Versión con `docker compose` (v2 o superior) |
 | Navegador moderno | Chrome, Edge, Firefox o Safari |
-| Puerto libre | `8080` en el equipo (se puede cambiar, ver §8) |
+| Puerto libre | `8080` en el equipo (se puede cambiar, ver §9) |
 | Memoria | ~1 GB libre para los 5 contenedores |
 
 Opcional, sólo para desarrollo: Python 3.11 y Node.js 20+.
@@ -46,7 +47,10 @@ Opcional, sólo para desarrollo: Python 3.11 y Node.js 20+.
 
 1. **Abrir Docker Desktop** y esperar a que indique que está en ejecución.
 2. **Obtener el proyecto** (clonar el repositorio o descomprimir la carpeta entregada).
-3. Abrir una terminal **en la carpeta del proyecto** (donde está `docker-compose.yml`) y ejecutar:
+3. *(Recomendado)* Copiar `.env.example` a `.env` y elegir la contraseña del administrador
+   (`ADMIN_PASSWORD`) y un secreto para las sesiones (`JWT_SECRET`). Si se omite, el sistema genera una
+   contraseña de administrador aleatoria y la muestra una sola vez en los registros (ver §4.1).
+4. Abrir una terminal **en la carpeta del proyecto** (donde está `docker-compose.yml`) y ejecutar:
 
    ```bash
    docker compose up -d --build
@@ -54,7 +58,7 @@ Opcional, sólo para desarrollo: Python 3.11 y Node.js 20+.
 
    La primera vez tarda unos minutos (descarga imágenes y compila el frontend).
 
-4. Comprobar que los 5 servicios estén en estado `healthy`:
+5. Comprobar que los 5 servicios estén en estado `healthy`:
 
    ```bash
    docker compose ps
@@ -69,7 +73,7 @@ Opcional, sólo para desarrollo: Python 3.11 y Node.js 20+.
    gateway          Up 7 seconds (healthy)    0.0.0.0:8080->80/tcp
    ```
 
-5. Abrir **<http://localhost:8080>** en el navegador.
+6. Abrir **<http://localhost:8080>** en el navegador e iniciar sesión (§4).
 
 | Dirección | Qué es |
 |-----------|--------|
@@ -82,7 +86,60 @@ Opcional, sólo para desarrollo: Python 3.11 y Node.js 20+.
 
 ---
 
-## 4. Recorrido por la interfaz
+## 4. Inicio de sesión y roles
+
+![Pantalla de inicio de sesión](img/00_inicio_sesion.png)
+
+Al abrir el sistema se muestra la pantalla de **Iniciar sesión / Crear cuenta**. Hay dos tipos de
+usuario:
+
+| Rol | Cómo se obtiene | Qué puede hacer |
+|-----|-----------------|-----------------|
+| **Cliente** | Pestaña **Crear cuenta** (usuario, nombre, contraseña) | Crear pedidos, ver **sólo los suyos**, editarlos o cancelarlos mientras estén *Pendiente* |
+| **Administrador** | Cuenta inicial configurada al instalar | Ver **todos** los pedidos, cambiar estados, eliminar cualquiera, y usar el panel del clúster (simular caídas, sincronizar) |
+
+### 4.1 Contraseña del administrador
+
+- Si se definió `ADMIN_PASSWORD` en `.env`, el usuario es `admin` (o el de `ADMIN_USERNAME`) con esa
+  contraseña.
+- Si no se definió, se generó una aleatoria la primera vez. Para verla:
+
+  ```bash
+  docker compose logs backend-node-1 backend-node-2 | grep "ADMIN inicial"
+  ```
+
+- Para cambiarla o crear otro administrador:
+
+  ```bash
+  docker compose exec backend-node-1 python -m app.cli create-admin --username admin --password 'NuevaClave2026'
+  ```
+
+### 4.2 Crear una cuenta de cliente
+
+Pulsar **Crear cuenta** y completar usuario (3–50 caracteres: letras, números, `.`, `-`, `_`), nombre
+completo y contraseña (mínimo 8 caracteres, con letras y números). Al terminar se entra directamente.
+
+### 4.3 Vista de cliente
+
+![Vista de un cliente con su pedido](img/10_vista_cliente.png)
+
+El cliente ve **Tu conexión al clúster** (qué servidor y qué base atendieron su última petición), el
+formulario de pedido (con su nombre ya puesto) y **Mis pedidos**. No ve los botones de simulación de
+fallos ni los pedidos de otras personas, y no puede cambiar estados: eso lo hace el administrador.
+
+### 4.4 Sesión y seguridad
+
+- La barra superior muestra el nombre, el rol (**Administrador** o **Cliente**) y **Cerrar sesión**.
+- La sesión dura 8 horas y **sigue funcionando aunque se caiga un servidor**.
+- Tras 5 intentos fallidos de contraseña, el inicio de sesión se bloquea unos minutos.
+- Si un administrador desactiva una cuenta, esa persona vuelve a la pantalla de inicio con el aviso
+  *"Tu sesión terminó"*.
+
+---
+
+## 5. Recorrido por la interfaz
+
+Vista del **administrador**:
 
 ![Vista general del panel](img/01_dashboard.png)
 
@@ -90,12 +147,12 @@ La pantalla tiene cuatro zonas:
 
 | Zona | Contenido |
 |------|-----------|
-| **Barra superior** | Nombre del sistema, indicador **"Gateway NGINX conectado"** (verde) o **"sin backends"** (rojo) y enlace a la documentación de la API |
+| **Barra superior** | Nombre del sistema, indicador **"Gateway NGINX conectado"** (verde) o **"sin backends"** (rojo), enlace a la API (sólo admin), usuario con su rol y **Cerrar sesión** |
 | **Estado del clúster** | Última petición, estado de los nodos y de las bases de datos, botones de simulación de fallos |
 | **Pedidos** | Formulario "Nuevo pedido" (izquierda) y tabla de pedidos con filtros (derecha) |
 | **Registro de peticiones** | Historial de las últimas peticiones con el nodo y la base que las atendió |
 
-### 4.1 Panel "Estado del clúster"
+### 5.1 Panel "Estado del clúster"
 
 ![Panel de estado del clúster en condiciones normales](img/03_estado_cluster_normal.png)
 
@@ -113,7 +170,7 @@ La pantalla tiene cuatro zonas:
 
 El panel se actualiza solo cada 3 segundos.
 
-### 4.2 Registro de peticiones
+### 5.2 Registro de peticiones
 
 ![Registro de peticiones con un reintento de NGINX](img/05_registro_peticiones_failover.png)
 
@@ -123,9 +180,9 @@ y el gateway reintentó automáticamente en el otro: **el usuario no vio ningún
 
 ---
 
-## 5. Gestión de pedidos
+## 6. Gestión de pedidos
 
-### 5.1 Crear un pedido
+### 6.1 Crear un pedido
 
 ![Formulario de nuevo pedido](img/02_formulario_nuevo_pedido.png)
 
@@ -138,7 +195,7 @@ y el gateway reintentó automáticamente en el otro: **el usuario no vio ningún
 
 Si falta algún dato, el formulario muestra el error en rojo y no envía nada.
 
-### 5.2 Ver, filtrar y buscar
+### 6.2 Ver, filtrar y buscar
 
 ![Tabla filtrada por estado](img/08_filtros.png)
 
@@ -148,40 +205,42 @@ Si falta algún dato, el formulario muestra el error en rojo y no envía nada.
 - **Refrescar** vuelve a leer los pedidos del servidor. Junto al botón se indica de qué base se leyó.
 - Cada fila muestra: identificador corto y fecha, cliente y resumen de ítems, total, estado con una barra
   de progreso de 4 pasos y el nodo que hizo el último cambio (`init.sql` para los pedidos de ejemplo).
+  El administrador ve además la **cuenta dueña** del pedido (👤) y puede buscar por ella.
 
-### 5.3 Cambiar el estado
+### 6.3 Cambiar el estado
 
 Los pedidos avanzan siempre en este orden:
 
 **Pendiente → En proceso → Enviado → Entregado**
 
-Pulsar el botón verde **→ (siguiente estado)** de la fila. Cuando el pedido llega a **Entregado** se
+*(Sólo administrador.)* Pulsar el botón verde **→ (siguiente estado)** de la fila. Cuando el pedido llega a **Entregado** se
 muestra **✓ Completado**. No se puede saltar ni retroceder estados (el sistema lo impide).
 
-### 5.4 Editar un pedido
+### 6.4 Editar un pedido
 
-Sólo los pedidos **Pendiente** muestran el botón **Editar**. Al pulsarlo, el formulario de la izquierda
+Sólo los pedidos **Pendiente** muestran el botón **Editar** (el cliente, únicamente en los suyos). Al pulsarlo, el formulario de la izquierda
 se carga con los datos del pedido; modificar lo necesario y pulsar **Guardar cambios** (o **Cancelar**).
 El total se recalcula automáticamente.
 
-### 5.5 Eliminar un pedido
+### 6.5 Eliminar un pedido
 
-Pulsar **Eliminar**; el botón cambia a **¿Confirmar?** durante 3 segundos. Pulsarlo de nuevo para
+El administrador ve **Eliminar** en todos los pedidos; el cliente ve **Cancelar pedido** sólo en sus
+pedidos *Pendiente*. Al pulsarlo, el botón cambia a **¿Confirmar?** durante 3 segundos. Pulsarlo de nuevo para
 eliminar definitivamente. Si no se confirma, vuelve a su estado normal.
 
 ---
 
-## 6. Cómo demostrar la tolerancia a fallos
+## 7. Cómo demostrar la tolerancia a fallos
 
-Guion sugerido para una presentación (≈ 5 minutos).
+Guion sugerido para una presentación (≈ 5 minutos), con la sesión iniciada como **administrador**.
 
-### 6.1 Balanceo de carga
+### 7.1 Balanceo de carga
 
 1. Pulsar **Probar balanceo (6 peticiones)**.
 2. **Qué observar:** la franja muestra **β α β α β α**: las peticiones se reparten por turnos entre
    los dos servidores (Round-Robin).
 
-### 6.2 Caída de un nodo
+### 7.2 Caída de un nodo
 
 ![Nodo Alpha caído: todas las peticiones las atiende Beta](img/04_caida_de_nodo.png)
 
@@ -191,10 +250,10 @@ Guion sugerido para una presentación (≈ 5 minutos).
    éxito y todas las atendió Beta (una petición fallida aparecería como **×** en rojo).
 3. Crear un pedido o avanzar un estado: **funciona normalmente** y lo atiende `Nodo-Beta-02`.
 4. En el **Registro de peticiones** aparece **`503 → 200`**: el gateway detectó el fallo y reintentó
-   en el otro nodo de forma transparente (ver captura de §4.2).
+   en el otro nodo de forma transparente (ver captura de §5.2).
 5. Pulsar **Restaurar nodo**. En unos segundos Alpha vuelve a recibir peticiones.
 
-### 6.3 Caída de la base de datos primaria
+### 7.3 Caída de la base de datos primaria
 
 ![Base primaria caída: los datos se sirven desde la réplica](img/06_failover_bd_primaria.png)
 
@@ -204,7 +263,7 @@ Guion sugerido para una presentación (≈ 5 minutos).
    *"Failover de BD: db-primary no respondió; la operación se atendió en db-replica…"*.
 3. La tabla indica **Leído desde Replica Failover** y sigue mostrando todos los pedidos.
 
-### 6.4 Recuperación y reconciliación
+### 7.4 Recuperación y reconciliación
 
 ![Primaria restaurada y réplica en sincronía](img/07_reconciliacion.png)
 
@@ -213,7 +272,12 @@ Guion sugerido para una presentación (≈ 5 minutos).
    primaria"*: el pedido creado durante la caída se copió a la primaria.
 3. La franja vuelve a verde: **✓ Réplica en sincronía**. Las siguientes operaciones usan **Primary**.
 
-### 6.5 Fallos reales (opcional, desde la terminal)
+### 7.5 La sesión sobrevive a la caída de un servidor
+
+Con un cliente conectado en otra ventana, simular la caída de cualquiera de los dos nodos: el cliente
+sigue trabajando sin volver a iniciar sesión, porque su sesión es válida en ambos servidores.
+
+### 7.6 Fallos reales (opcional, desde la terminal)
 
 Además de la simulación, se pueden apagar contenedores de verdad:
 
@@ -227,16 +291,16 @@ docker compose start db-primary      # en ~5-10 s la réplica y la primaria se r
 
 ---
 
-## 7. Uso desde el celular
+## 8. Uso desde el celular
 
 La interfaz se adapta a pantallas pequeñas: las tarjetas se apilan y la tabla permite desplazamiento
-horizontal.
+horizontal. La captura muestra la vista de un cliente.
 
 <img src="img/09_vista_movil.png" alt="Vista en un teléfono" width="320">
 
 ---
 
-## 8. Preguntas frecuentes y solución de problemas
+## 9. Preguntas frecuentes y solución de problemas
 
 | Problema | Solución |
 |----------|----------|
@@ -245,13 +309,18 @@ horizontal.
 | La página carga pero dice **"Gateway NGINX sin backends"** | Los dos nodos están caídos. Restaurar con los botones o `docker compose start backend-node-1 backend-node-2` |
 | Un pedido muestra error *"Transición inválida"* | Se intentó saltar o retroceder un estado; sólo se avanza al siguiente |
 | No aparece el botón **Editar** | Sólo los pedidos en estado Pendiente se pueden editar |
-| Quiero volver a los datos de ejemplo | `docker compose down -v && docker compose up -d --build` |
+| Quiero volver a los datos de ejemplo | `docker compose down -v && docker compose up -d --build` (borra también los usuarios) |
+| No sé la contraseña del administrador | Ver §4.1 (registros o `python -m app.cli create-admin`) |
+| *"Usuario o contraseña incorrectos"* | Revisar mayúsculas/minúsculas de la contraseña (el usuario no distingue mayúsculas) |
+| *"Demasiados intentos fallidos"* | Esperar unos minutos (el tiempo exacto aparece en el mensaje) |
+| *"Tu sesión terminó"* | La sesión expiró o la cuenta fue desactivada: volver a iniciar sesión |
+| Un cliente no ve los botones de caída | Es lo esperado: sólo el administrador controla el clúster |
 | Ver lo que hace cada servidor | `docker compose logs -f backend-node-1 backend-node-2` (busca `FAILOVER`, `REPLICATION`, `SYNC`) |
 | La franja de sincronía sigue en ámbar tras restaurar | Pulsar **Sincronizar ahora** o esperar ~5 s a la reconciliación automática |
 
 ---
 
-## 9. Glosario
+## 10. Glosario
 
 | Término | Significado |
 |---------|-------------|
@@ -263,3 +332,5 @@ horizontal.
 | **Replica Failover** | La operación se atendió desde la réplica porque la primaria no estaba disponible |
 | **Reconciliación** | Proceso que iguala ambas bases copiando los cambios que faltan |
 | **Caída simulada** | Fallo provocado a propósito desde el panel para demostrar la tolerancia a fallos |
+| **Sesión / token** | Credencial temporal que se obtiene al iniciar sesión y que ambos servidores reconocen |
+| **Rol** | Tipo de usuario: *Cliente* (sus pedidos) o *Administrador* (todo el sistema) |

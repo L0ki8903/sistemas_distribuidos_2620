@@ -21,7 +21,7 @@ function itemsSummary(items) {
   return items.map((item) => `${item.product} ×${item.quantity}`).join(", ");
 }
 
-function DeleteButton({ disabled, onConfirm }) {
+function DeleteButton({ disabled, onConfirm, label = "Eliminar" }) {
   const [armed, setArmed] = useState(false);
   useEffect(() => {
     if (!armed) return undefined;
@@ -35,12 +35,12 @@ function DeleteButton({ disabled, onConfirm }) {
       disabled={disabled}
       onClick={() => (armed ? onConfirm() : setArmed(true))}
     >
-      {armed ? "¿Confirmar?" : "Eliminar"}
+      {armed ? "¿Confirmar?" : label}
     </button>
   );
 }
 
-export default function OrdersTable({ orders, state, pending, onAdvance, onEdit, onDelete, onRefresh, editingId }) {
+export default function OrdersTable({ orders, state, pending, onAdvance, onEdit, onDelete, onRefresh, editingId, isAdmin = true }) {
   const [filter, setFilter] = useState("todos");
   const [query, setQuery] = useState("");
 
@@ -57,14 +57,17 @@ export default function OrdersTable({ orders, state, pending, onAdvance, onEdit,
     return orders.filter(
       (o) =>
         (filter === "todos" || o.status === filter) &&
-        (!q || o.customer_name.toLowerCase().includes(q) || o.id.startsWith(q)),
+        (!q ||
+          o.customer_name.toLowerCase().includes(q) ||
+          o.id.startsWith(q) ||
+          (o.owner_username ?? "").toLowerCase().includes(q)),
     );
   }, [orders, filter, query]);
 
   return (
     <section className="card orders" aria-labelledby="orders-title">
       <header className="card-head">
-        <h3 id="orders-title">Pedidos</h3>
+        <h3 id="orders-title">{isAdmin ? "Pedidos (todos los clientes)" : "Mis pedidos"}</h3>
         <div className="orders-tools">
           <span className="muted small">
             Leído desde <DbChip dbUsed={state.dbUsed} />
@@ -123,7 +126,11 @@ export default function OrdersTable({ orders, state, pending, onAdvance, onEdit,
             {!state.loading && visible.length === 0 && (
               <tr>
                 <td colSpan={6} className="empty">
-                  {orders.length === 0 ? "No hay pedidos todavía. Crea el primero con el formulario." : "Ningún pedido coincide con el filtro."}
+                  {orders.length === 0
+                    ? isAdmin
+                      ? "No hay pedidos todavía."
+                      : "Aún no tienes pedidos. Crea el primero con el formulario."
+                    : "Ningún pedido coincide con el filtro."}
                 </td>
               </tr>
             )}
@@ -140,6 +147,11 @@ export default function OrdersTable({ orders, state, pending, onAdvance, onEdit,
                     <div className="items-line muted small" title={itemsSummary(order.items)}>
                       {itemsSummary(order.items)}
                     </div>
+                    {isAdmin && (
+                      <div className="owner-line small" title="Cuenta que creó el pedido">
+                        👤 {order.owner_username ?? "sin cuenta (datos de ejemplo)"}
+                      </div>
+                    )}
                   </td>
                   <td className="num mono">{formatMoney(order.total)}</td>
                   <td>
@@ -151,19 +163,21 @@ export default function OrdersTable({ orders, state, pending, onAdvance, onEdit,
                   <td><NodeChip node={order.handled_by_node} /></td>
                   <td>
                     <div className="actions">
-                    {order.next_status ? (
+                    {!order.next_status ? (
+                      <span className="done-label">✓ Completado</span>
+                    ) : isAdmin ? (
                       <button type="button" className="btn btn-sm btn-primary" disabled={busy} onClick={() => onAdvance(order)}>
                         → {STATUS_LABELS[order.next_status]}
                       </button>
-                    ) : (
-                      <span className="done-label">✓ Completado</span>
-                    )}
+                    ) : null}
                     {order.status === "pendiente" && (
                       <button type="button" className="btn btn-sm btn-ghost" disabled={busy} onClick={() => onEdit(order)}>
                         Editar
                       </button>
                     )}
-                    <DeleteButton disabled={busy} onConfirm={() => onDelete(order)} />
+                    {(isAdmin || order.status === "pendiente") && (
+                      <DeleteButton label={isAdmin ? "Eliminar" : "Cancelar pedido"} disabled={busy} onConfirm={() => onDelete(order)} />
+                    )}
                     </div>
                   </td>
                 </tr>

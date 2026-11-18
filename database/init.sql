@@ -14,11 +14,31 @@ CREATE TABLE IF NOT EXISTS orders (
     updated_at      TIMESTAMPTZ    NOT NULL,                   -- versión para last-write-wins
     deleted_at      TIMESTAMPTZ    NULL,                       -- tombstone (borrado lógico)
     handled_by_node VARCHAR(50)    NOT NULL,                   -- nodo de la última escritura
+    owner_id        VARCHAR(36)    NULL,                       -- usuario dueño (NULL en los de ejemplo)
     CONSTRAINT ck_orders_status CHECK (status IN ('pendiente', 'en proceso', 'enviado', 'entregado'))
 );
 
 CREATE INDEX IF NOT EXISTS ix_orders_status ON orders (status);
 CREATE INDEX IF NOT EXISTS ix_orders_updated_at ON orders (updated_at);
+CREATE INDEX IF NOT EXISTS ix_orders_owner_id ON orders (owner_id);
+
+-- Usuarios (también replicados). El administrador inicial lo crea la aplicación al arrancar
+-- (ADMIN_USERNAME / ADMIN_PASSWORD): así ninguna contraseña queda escrita en el repositorio.
+CREATE TABLE IF NOT EXISTS users (
+    id            VARCHAR(36)  PRIMARY KEY,
+    username      VARCHAR(50)  NOT NULL,
+    full_name     VARCHAR(120) NOT NULL,
+    password_hash VARCHAR(255) NOT NULL,                      -- PBKDF2-SHA256, nunca texto plano
+    role          VARCHAR(10)  NOT NULL DEFAULT 'user',
+    is_active     BOOLEAN      NOT NULL DEFAULT TRUE,
+    created_at    TIMESTAMPTZ  NOT NULL,
+    updated_at    TIMESTAMPTZ  NOT NULL,
+    deleted_at    TIMESTAMPTZ  NULL,
+    CONSTRAINT ck_users_role CHECK (role IN ('user', 'admin')),
+    CONSTRAINT uq_users_username UNIQUE (username)
+);
+
+CREATE INDEX IF NOT EXISTS ix_users_updated_at ON users (updated_at);
 
 -- Pedidos de ejemplo. IDs y fechas FIJOS para que primaria y réplica sean idénticas.
 INSERT INTO orders (id, customer_name, items, total, status, created_at, updated_at, deleted_at, handled_by_node)

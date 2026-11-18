@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 OrderStatus = Literal["pendiente", "en proceso", "enviado", "entregado"]
 DbUsed = Literal["primary", "replica_failover"]
@@ -55,6 +55,8 @@ class OrderOut(BaseModel):
     created_at: datetime
     updated_at: datetime
     handled_by_node: str = Field(description="Nodo que procesó la última escritura del pedido")
+    owner_id: str | None = Field(default=None, description="Usuario dueño del pedido")
+    owner_username: str | None = Field(default=None, description="Usuario dueño (sólo en listados)")
 
 
 class OrderResponse(BaseModel):
@@ -92,3 +94,74 @@ class DeleteResponse(BaseModel):
 
 class Switch(BaseModel):
     enabled: bool = Field(description="true = activar la simulación de fallo, false = restaurar")
+
+
+# ---------------------------------------------------------------------- autenticación
+# Ojo: estos modelos NO usan str_strip_whitespace, para no alterar las contraseñas.
+UserRole = Literal["user", "admin"]
+USERNAME_PATTERN = r"^[A-Za-z0-9_.-]{3,50}$"
+
+
+class RegisterRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    username: str = Field(pattern=USERNAME_PATTERN, examples=["ana.torres"],
+                          description="3-50 caracteres: letras, números, punto, guion y guion bajo")
+    full_name: str = Field(min_length=2, max_length=120, examples=["Ana Torres"])
+    password: str = Field(min_length=8, max_length=128, examples=["Pedidos2026"],
+                          description="Mínimo 8 caracteres, con al menos una letra y un número")
+
+    @field_validator("username")
+    @classmethod
+    def normalize_username(cls, value: str) -> str:
+        return value.lower()
+
+    @field_validator("full_name")
+    @classmethod
+    def strip_full_name(cls, value: str) -> str:
+        value = value.strip()
+        if len(value) < 2:
+            raise ValueError("El nombre debe tener al menos 2 caracteres")
+        return value
+
+    @field_validator("password")
+    @classmethod
+    def password_strength(cls, value: str) -> str:
+        if not any(c.isalpha() for c in value) or not any(c.isdigit() for c in value):
+            raise ValueError("La contraseña debe tener al menos una letra y un número")
+        return value
+
+
+class LoginRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    username: str = Field(min_length=1, max_length=50, examples=["admin"])
+    password: str = Field(min_length=1, max_length=128)
+
+    @field_validator("username")
+    @classmethod
+    def normalize_username(cls, value: str) -> str:
+        return value.strip().lower()
+
+
+class UserOut(BaseModel):
+    id: str
+    username: str
+    full_name: str
+    role: UserRole
+    is_active: bool
+    created_at: datetime
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: Literal["bearer"] = "bearer"
+    expires_in: int = Field(description="Segundos de validez del token")
+    user: UserOut
+    node: str
+    db_used: DbUsed
+
+
+class MeResponse(BaseModel):
+    node: str
+    user: UserOut

@@ -1,7 +1,8 @@
-"""Chaos Engineering: simular la caída de un nodo o de db-primary.
+"""Chaos Engineering: simular la caída de un nodo o de db-primary (sólo administradores).
 
 Detrás de NGINX no se puede elegir qué nodo recibe una petición, así que los endpoints con
-``{target_node}`` reenvían la orden por REST al nodo correcto (comunicación entre nodos).
+``{target_node}`` reenvían la orden por REST al nodo correcto (comunicación entre nodos). El reenvío
+incluye la misma cabecera ``Authorization``: el otro nodo valida el JWT con el secreto compartido.
 """
 from __future__ import annotations
 
@@ -14,12 +15,12 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from ..chaos import ChaosState
 from ..config import Settings
 from ..database import DatabaseCluster
-from ..deps import get_chaos, get_cluster, get_peers, get_settings
+from ..deps import forwarded_auth_headers, get_chaos, get_cluster, get_peers, get_settings, require_admin
 from ..peers import FORWARDED_HEADER, PeerClient
 from ..schemas import Switch
 
 logger = logging.getLogger("pedidos.chaos")
-router = APIRouter(prefix="/api/chaos", tags=["Chaos Engineering"])
+router = APIRouter(prefix="/api/chaos", tags=["Chaos Engineering"], dependencies=[Depends(require_admin)])
 
 
 def _forwarded(request: Request) -> bool:
@@ -57,12 +58,16 @@ def _set_crash(
         raise HTTPException(status_code=404, detail=f"Nodo desconocido '{target_node}'. Nodos conocidos: {known}")
 
     path_target = quote(target_node, safe="")
+    auth = forwarded_auth_headers(request)
     try:
         if enabled is None:
-            response = peers.request(peer, "POST", f"/api/chaos/toggle/{path_target}", settings.node_id)
+            response = peers.request(
+                peer, "POST", f"/api/chaos/toggle/{path_target}", settings.node_id, headers=auth
+            )
         else:
             response = peers.request(
-                peer, "PUT", f"/api/chaos/crash/{path_target}", settings.node_id, json={"enabled": enabled}
+                peer, "PUT", f"/api/chaos/crash/{path_target}", settings.node_id,
+                json={"enabled": enabled}, headers=auth,
             )
     except httpx.HTTPError as exc:
         # 409 (no 5xx) para que NGINX no reintente la orden de caos en otro nodo.
@@ -75,7 +80,7 @@ def _set_crash(
 
 def _apply_db_flag(
     enabled: bool,
-    propagate: bool,
+    request: Request,
     chaos: ChaosState,
     cluster: DatabaseCluster,
     peers: PeerClient,
@@ -88,12 +93,13 @@ def _apply_db_flag(
     # cuántas filas escritas durante la caída se copiaron de vuelta a la primaria.
     sync = cluster.reconcile(reason="restauración de db-primary") if not enabled else None
     propagation: list[dict] = [{"node": settings.node_id, "ok": True}]
-    if propagate:
+    if not _forwarded(request):  # sólo el nodo que recibió la orden la propaga
         for peer in peers.peers:
             label = peer.name or peer.url
             try:
                 response = peers.request(
-                    peer, "PUT", "/api/chaos/db-primary", settings.node_id, json={"enabled": enabled}
+                    peer, "PUT", "/api/chaos/db-primary", settings.node_id,
+                    json={"enabled": enabled}, headers=forwarded_auth_headers(request),
                 )
                 response.raise_for_status()
                 propagation.append({"node": label, "ok": True, "sync": response.json().get("sync")})
@@ -115,13 +121,15 @@ def local_state(chaos: ChaosState = Depends(get_chaos)):
 
 @router.get("/status", summary="Vista del clúster: nodos, banderas de caos y bases de datos")
 def cluster_status(
+    request: Request,
     chaos: ChaosState = Depends(get_chaos),
     cluster: DatabaseCluster = Depends(get_cluster),
     peers: PeerClient = Depends(get_peers),
     settings: Settings = Depends(get_settings),
 ):
+    auth = forwarded_auth_headers(request)
     nodes = [{**chaos.snapshot(), "reachable": True, "self": True, "url": None}]
-    nodes += [{**peers.local_state(peer, settings.node_id), "self": False} for peer in peers.peers]
+    nodes += [{**peers.local_state(peer, settings.node_id, auth), "self": False} for peer in peers.peers]
     return {
         "reporter": settings.node_id,
         "nodes": nodes,
@@ -171,9 +179,7 @@ def toggle_db_primary(
     peers: PeerClient = Depends(get_peers),
     settings: Settings = Depends(get_settings),
 ):
-    return _apply_db_flag(
-        not chaos.simulate_db_primary_down, not _forwarded(request), chaos, cluster, peers, settings
-    )
+    return _apply_db_flag(not chaos.simulate_db_primary_down, request, chaos, cluster, peers, settings)
 
 
 @router.put("/db-primary", summary="Fijar SIMULATE_DB_PRIMARY_DOWN (idempotente) en todo el clúster")
@@ -185,4 +191,4 @@ def set_db_primary(
     peers: PeerClient = Depends(get_peers),
     settings: Settings = Depends(get_settings),
 ):
-    return _apply_db_flag(body.enabled, not _forwarded(request), chaos, cluster, peers, settings)
+    return _apply_db_flag(body.enabled, request, chaos, cluster, peers, settings)

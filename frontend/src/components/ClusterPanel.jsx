@@ -186,8 +186,41 @@ export default function ClusterPanel({
   onToggleDb,
   onSync,
   onTestBalancing,
+  isAdmin = true,
 }) {
   const nodes = [...(cluster?.nodes ?? [])].sort((a, b) => (a.node ?? a.url).localeCompare(b.node ?? b.url));
+  if (!isAdmin) {
+    // Vista de cliente: sólo ve cómo el clúster atendió SUS peticiones (sin controles de caos).
+    return (
+      <section className="cluster" aria-labelledby="cluster-title">
+        <div className="section-head">
+          <h2 id="cluster-title">Tu conexión al clúster</h2>
+          <span className="muted">Cada petición la atiende uno de los dos servidores</span>
+        </div>
+        <div className="cluster-grid cluster-grid--client">
+          <LastRequestCard meta={lastRequest} />
+          <article className="card info-card">
+            <header className="card-head">
+              <h3>¿Cómo se protegen tus pedidos?</h3>
+            </header>
+            <ul className="info-list">
+              <li>
+                <strong>Dos servidores</strong> (<NodeChip node="Nodo-Alpha-01" /> y <NodeChip node="Nodo-Beta-02" />)
+                se reparten tus peticiones; si uno falla, el otro responde sin que lo notes.
+              </li>
+              <li>
+                <strong>Dos bases de datos:</strong> cada pedido se guarda en la principal y en una copia
+                (<DbChip dbUsed="primary" /> / <DbChip dbUsed="replica_failover" />).
+              </li>
+              <li>
+                <strong>Tu sesión es válida en ambos servidores</strong>: puedes seguir trabajando aunque uno se caiga.
+              </li>
+            </ul>
+          </article>
+        </div>
+      </section>
+    );
+  }
   return (
     <section className="cluster" aria-labelledby="cluster-title">
       <div className="section-head">

@@ -1,6 +1,15 @@
 // Cliente de la API. SIEMPRE usa rutas relativas (/api/...): el gateway NGINX las balancea.
+import { getToken } from "./auth.js";
+
 const listeners = new Set();
+const unauthorizedListeners = new Set();
 let sequence = 0;
+
+/** Se dispara cuando el servidor rechaza la sesión (401): token expirado o usuario desactivado. */
+export function onUnauthorized(listener) {
+  unauthorizedListeners.add(listener);
+  return () => unauthorizedListeners.delete(listener);
+}
 
 export function onApiEvent(listener) {
   listeners.add(listener);
@@ -44,16 +53,20 @@ export function uuid() {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
-async function request(method, path, { body, silent = false } = {}) {
+async function request(method, path, { body, silent = false, auth = true } = {}) {
   const started = performance.now();
   let response;
   let data = null;
   let networkError = null;
+  const headers = {};
+  if (body) headers["Content-Type"] = "application/json";
+  const token = auth ? getToken() : null;
+  if (token) headers.Authorization = `Bearer ${token}`;
   try {
     response = await fetch(path, {
       method,
       cache: "no-store",
-      headers: body ? { "Content-Type": "application/json" } : undefined,
+      headers,
       body: body ? JSON.stringify(body) : undefined,
     });
     const text = await response.text();
@@ -75,17 +88,23 @@ async function request(method, path, { body, silent = false } = {}) {
     dbUsed: header("X-DB-Used") ?? data?.db_used ?? null,
     replication: header("X-Replication") ?? data?.replication ?? null,
     upstreamStatus: header("X-Upstream-Status"),
-    upstreamAddr: header("X-Upstream-Addr"),
     durationMs: Math.round(performance.now() - started),
   };
   listeners.forEach((listener) => listener(meta));
 
   if (networkError) throw new ApiError("No se pudo contactar al gateway", 0, meta, null);
+  if (response.status === 401 && auth) {
+    unauthorizedListeners.forEach((listener) => listener(errorMessage(401, data)));
+  }
   if (!response.ok) throw new ApiError(errorMessage(response.status, data), response.status, meta, data);
   return { data, meta };
 }
 
 export const api = {
+  login: (username, password) =>
+    request("POST", "/api/auth/login", { body: { username, password }, auth: false }),
+  register: (payload) => request("POST", "/api/auth/register", { body: payload, auth: false }),
+  me: () => request("GET", "/api/auth/me", { silent: true }),
   listOrders: (opts) => request("GET", "/api/orders", opts),
   createOrder: (payload) => request("POST", "/api/orders", { body: { id: uuid(), ...payload } }),
   updateOrder: (id, payload) => request("PATCH", `/api/orders/${id}`, { body: payload }),

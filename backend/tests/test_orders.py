@@ -1,6 +1,7 @@
 """Pruebas unitarias y de integración de la API de pedidos y de la tolerancia a fallos.
 
-Los 5 casos exigidos están marcados con [REQ-n]; el resto amplía la cobertura.
+Los 5 casos exigidos están marcados con [REQ-n]; el resto amplía la cobertura. El fixture ``client``
+tiene sesión de administrador (los permisos por rol se prueban en ``test_auth.py``).
 """
 from __future__ import annotations
 
@@ -11,7 +12,7 @@ from fastapi.testclient import TestClient
 from app.config import Peer
 from app.main import create_app
 from app.peers import PeerClient
-from tests.conftest import SAMPLE_ITEMS, create_sample_order
+from tests.conftest import SAMPLE_ITEMS, authenticate, bearer, create_sample_order, token_for
 
 
 # --------------------------------------------------------------------------- [REQ-1] crear
@@ -188,6 +189,7 @@ def test_failover_bd_primaria_a_replica_y_reconciliacion(client, db):
 def test_failover_cuando_la_primaria_es_inalcanzable_de_verdad(make_settings, broken_db_url):
     app = create_app(make_settings(primary_db_url=broken_db_url, breaker_cooldown_seconds=30))
     with TestClient(app) as client:
+        authenticate(client)  # el login también funciona: el usuario se lee de la réplica
         created = client.post("/api/orders", json={"customer_name": "Sin primaria", "items": SAMPLE_ITEMS})
         assert created.status_code == 201
         assert created.json()["db_used"] == "replica_failover"
@@ -207,8 +209,9 @@ def test_failover_cuando_la_primaria_es_inalcanzable_de_verdad(make_settings, br
 
 def test_si_caen_ambas_bd_responde_503_y_nunca_500(make_settings, broken_db_url, tmp_path):
     other_broken = f"sqlite:///{(tmp_path / 'tampoco_existe' / 'r.db').as_posix()}"
-    app = create_app(make_settings(primary_db_url=broken_db_url, replica_db_url=other_broken))
-    with TestClient(app) as client:
+    settings = make_settings(primary_db_url=broken_db_url, replica_db_url=other_broken)
+    app = create_app(settings)
+    with TestClient(app, headers=bearer(token_for(settings))) as client:
         for response in (
             client.get("/api/orders"),
             client.post("/api/orders", json={"customer_name": "Nadie", "items": SAMPLE_ITEMS}),
@@ -222,6 +225,7 @@ def test_si_caen_ambas_bd_responde_503_y_nunca_500(make_settings, broken_db_url,
 def test_replica_caida_no_bloquea_escrituras_en_primaria(make_settings, broken_db_url):
     app = create_app(make_settings(replica_db_url=broken_db_url))
     with TestClient(app) as client:
+        authenticate(client)
         created = client.post("/api/orders", json={"customer_name": "Sin réplica", "items": SAMPLE_ITEMS})
         assert created.status_code == 201
         assert created.json()["db_used"] == "primary"
@@ -317,6 +321,10 @@ def test_comunicacion_entre_nodos_reenvia_caos_y_propaga_caida_de_bd(make_settin
             peer_client=PeerClient(peers, timeout=2, client=beta),
         )
         with TestClient(alpha_app) as alpha:
+            # Un solo login: el token sirve en ambos nodos porque comparten JWT_SECRET, y el reenvío
+            # REST entre nodos lleva la misma cabecera Authorization.
+            authenticate(alpha)
+            beta.headers["Authorization"] = alpha.headers["Authorization"]
             # Alpha recibe la orden pero la reenvía por REST a Beta.
             toggled = alpha.post("/api/chaos/toggle/Nodo-Beta-02")
             assert toggled.status_code == 200

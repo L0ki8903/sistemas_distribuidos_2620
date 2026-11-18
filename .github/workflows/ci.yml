@@ -81,7 +81,7 @@ jobs:
       - name: Instalar dependencias
         run: pip install -r requirements-dev.txt
       - name: pytest contra PostgreSQL
-        run: python -m pytest -v tests/test_orders.py
+        run: python -m pytest -v tests/test_orders.py tests/test_auth.py
 
   frontend:
     name: Frontend · build (React + Vite)
@@ -105,6 +105,10 @@ jobs:
     needs: [backend, frontend]
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      # docker compose toma estas variables del entorno; son sólo para el clúster efímero de CI.
+      ADMIN_PASSWORD: Admin-CI-2026
+      JWT_SECRET: ci-only-jwt-secret-${{ github.run_id }}-0123456789abcdef
     steps:
       - uses: actions/checkout@v5
 
@@ -126,6 +130,7 @@ jobs:
         working-directory: backend
         env:
           CLUSTER_BASE_URL: http://localhost:8080
+          CLUSTER_ADMIN_PASSWORD: ${{ env.ADMIN_PASSWORD }}
         run: python -m pytest -v tests/test_cluster_e2e.py
 
       - uses: actions/setup-node@v5
@@ -137,6 +142,7 @@ jobs:
         working-directory: e2e-ui
         env:
           CHROME_PATH: /usr/bin/google-chrome
+          UI_ADMIN_PASSWORD: ${{ env.ADMIN_PASSWORD }}
         run: |
           npm ci --no-audit --no-fund
           node ui-test.mjs "$RUNNER_TEMP/capturas"

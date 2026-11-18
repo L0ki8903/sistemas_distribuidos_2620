@@ -957,6 +957,160 @@ tbody tr:hover td {
   padding: 18px 16px 28px;
 }
 
+/* ------------------------------------------------------------------ sesión y roles */
+.topbar-button {
+  background: transparent;
+  cursor: pointer;
+}
+
+.user-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.85rem;
+  color: #e2e8f0;
+}
+
+.user-name {
+  font-weight: 600;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.role-badge {
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+
+.role-admin {
+  background: #fde68a;
+  color: #78350f;
+}
+
+.role-user {
+  background: #bae6fd;
+  color: #0c4a6e;
+}
+
+.owner-line {
+  margin-top: 3px;
+  color: var(--text-2);
+}
+
+.cluster-grid--client {
+  grid-template-columns: minmax(280px, 1fr) minmax(320px, 2fr);
+}
+
+.info-card .info-list {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  color: var(--text-2);
+  font-size: 0.9rem;
+}
+
+.info-list .node-chip,
+.info-list .db-chip {
+  margin: 0 2px;
+}
+
+/* ------------------------------------------------------------------ login */
+.login-shell {
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: minmax(320px, 1fr) minmax(360px, 520px);
+}
+
+.login-brand {
+  background: radial-gradient(circle at 20% 20%, #134e4a 0%, #0f172a 60%);
+  color: #f8fafc;
+  padding: 56px 48px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 36px;
+}
+
+.login-brand h1 {
+  font-size: 1.6rem;
+}
+
+.login-brand .brand p {
+  color: #94a3b8;
+}
+
+.login-points {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  max-width: 460px;
+  color: #cbd5e1;
+  line-height: 1.5;
+}
+
+.login-points li {
+  padding-left: 16px;
+  border-left: 3px solid #2dd4bf;
+}
+
+.login-points strong {
+  color: #fff;
+}
+
+.login-panel {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 24px;
+}
+
+.login-card {
+  width: 100%;
+  max-width: 400px;
+  padding: 24px;
+}
+
+.login-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  padding: 4px;
+  margin-bottom: 18px;
+  background: #f1f5f9;
+  border-radius: var(--radius-sm);
+}
+
+.login-tabs button {
+  border: none;
+  background: transparent;
+  padding: 8px;
+  border-radius: 6px;
+  font-weight: 600;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.login-tabs button.active {
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.12);
+}
+
+.login-card .callout {
+  margin: 0 0 14px;
+}
+
 /* ------------------------------------------------------------------ responsive */
 @media (max-width: 1280px) {
   .cluster-grid {
@@ -970,6 +1124,19 @@ tbody tr:hover td {
 
 @media (max-width: 980px) {
   .workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .login-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .login-brand {
+    padding: 32px 24px;
+    gap: 20px;
+  }
+
+  .cluster-grid--client {
     grid-template-columns: 1fr;
   }
 

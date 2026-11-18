@@ -21,13 +21,15 @@ function validate(form) {
   return null;
 }
 
-export default function OrderForm({ editing, busy, onCreate, onUpdate, onCancelEdit }) {
-  const [form, setForm] = useState({ customer_name: "", items: [emptyItem()] });
+export default function OrderForm({ editing, busy, onCreate, onUpdate, onCancelEdit, defaultCustomer = "" }) {
+  const blank = () => ({ customer_name: defaultCustomer, items: [emptyItem()] });
+  const [form, setForm] = useState(blank);
   const [error, setError] = useState(null);
 
   useEffect(() => {
-    setForm(editing ? fromOrder(editing) : { customer_name: "", items: [emptyItem()] });
+    setForm(editing ? fromOrder(editing) : blank());
     setError(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editing]);
 
   const total = useMemo(
@@ -58,7 +60,7 @@ export default function OrderForm({ editing, busy, onCreate, onUpdate, onCancelE
       if (editing) await onUpdate(editing.id, payload);
       else {
         await onCreate(payload);
-        setForm({ customer_name: "", items: [emptyItem()] });
+        setForm(blank());
       }
     } catch {
       /* el error ya se notificó */

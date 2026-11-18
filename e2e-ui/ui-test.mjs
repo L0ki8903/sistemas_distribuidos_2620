@@ -21,6 +21,8 @@ const CHROME =
 if (!CHROME) throw new Error("No se encontró Chrome/Edge: define CHROME_PATH");
 fs.mkdirSync(OUT, { recursive: true });
 const SEED_CUSTOMERS = ["Distribuidora Andina S.A.S.", "Ferretería El Tornillo", "María Fernanda López"];
+const ADMIN_USER = process.env.UI_ADMIN_USER || "admin";
+const ADMIN_PASSWORD = process.env.UI_ADMIN_PASSWORD || "Admin12345";
 
 const results = [];
 const check = (name, ok, extra = "") => {
@@ -38,13 +40,25 @@ const browser = await puppeteer.launch({
 const page = await browser.newPage();
 const pageErrors = [];
 page.on("pageerror", (e) => pageErrors.push(e.message));
-page.on("console", (m) => m.type() === "error" && pageErrors.push(m.text()));
+// El navegador registra en consola el 401 del login fallido que la prueba provoca a propósito;
+// se tolera exactamente ese (expectedUnauthorized) y cualquier otro error cuenta como fallo.
+let expectedUnauthorized = 0;
+page.on("console", (m) => {
+  if (m.type() !== "error") return;
+  if (expectedUnauthorized > 0 && /status of 401/.test(m.text())) {
+    expectedUnauthorized -= 1;
+    return;
+  }
+  pageErrors.push(m.text());
+});
 
 const shot = async (name, selector, { keepToasts = false } = {}) => {
   const file = path.join(OUT, name);
   // Captura limpia: barra superior no fija, sin foco en inputs y (opcional) sin toasts.
-  await page.addStyleTag({ content: ".topbar{position:static!important}" });
+  // (Vía CSSOM y no con <style>: la Content-Security-Policy del sitio bloquea estilos en línea.)
   await page.evaluate((keepToasts) => {
+    const topbar = document.querySelector(".topbar");
+    if (topbar) topbar.style.position = "static";
     document.activeElement?.blur();
     if (!keepToasts) document.querySelectorAll(".toast .icon-btn").forEach((b) => b.click());
     window.scrollTo(0, 0);
@@ -139,9 +153,34 @@ async function createOrder(customer, items) {
   await submitNewOrder();
 }
 
+async function fillLogin(username, password) {
+  const inputs = await page.$$(".login-card input");
+  await inputs[0].click({ clickCount: 3 });
+  await inputs[0].type(username);
+  const passwordInput = await page.$('.login-card input[type="password"]');
+  await passwordInput.click({ clickCount: 3 });
+  await passwordInput.type(password);
+}
+
 try {
-  // ------------------------------------------------------------------ carga inicial
+  // ------------------------------------------------------------------ inicio de sesión
   await page.goto(BASE, { waitUntil: "networkidle0" });
+  await page.evaluate(() => localStorage.clear());
+  await page.reload({ waitUntil: "networkidle0" });
+  await page.waitForSelector(".login-card");
+  check("Sin sesión se muestra la pantalla de inicio de sesión", Boolean(await page.$(".login-card")));
+  await shot("00_inicio_sesion.png");
+  expectedUnauthorized = 1;
+  await fillLogin(ADMIN_USER, "contraseña-incorrecta-1");
+  await clickButton("Entrar", ".login-card");
+  await waitText(".login-card .form-error", "incorrectos");
+  check("Login con contraseña incorrecta muestra error genérico", true);
+  await fillLogin(ADMIN_USER, ADMIN_PASSWORD);
+  await clickButton("Entrar", ".login-card");
+  await page.waitForSelector(".role-badge");
+  check("Login de administrador abre el panel completo", (await text(".role-badge")) === "Administrador");
+
+  // ------------------------------------------------------------------ carga inicial
   await page.waitForSelector("tbody .customer");
   await sleep(3500); // primer ciclo de polling del clúster
   const initial = await customers();
@@ -266,7 +305,34 @@ try {
   }
   check("Eliminar pedidos con confirmación en dos pasos", !(await customers()).some((c) => c.startsWith("Pedido con")));
 
-  // ------------------------------------------------------------------ vista móvil
+  // ------------------------------------------------------------------ cliente (rol user)
+  await clickButton("Cerrar sesión");
+  await page.waitForSelector(".login-card");
+  check("Cerrar sesión vuelve a la pantalla de inicio", true);
+  const clientUser = `cliente.${Date.now().toString(36)}`;
+  await clickButton("Crear cuenta", ".login-tabs");
+  const registerInputs = await page.$$(".login-card input");
+  await registerInputs[0].type(clientUser);
+  await registerInputs[1].type("Camila Rojas");
+  await registerInputs[2].type("Cliente2026");
+  await registerInputs[3].type("Cliente2026");
+  await page.click(".login-card button[type=submit]");
+  await page.waitForSelector(".role-badge");
+  check("Registro de cliente inicia sesión con rol Cliente", (await text(".role-badge")) === "Cliente");
+  await page.waitForFunction(() => document.querySelector("#orders-title")?.textContent === "Mis pedidos");
+  check("El cliente no ve los pedidos de otros", (await customers()).length === 0);
+  check("El cliente no ve controles de caos ni de bases de datos", !(await page.$$eval("button", (bs) => bs.some((b) => /Simular|Restaurar|Sincronizar/.test(b.textContent)))));
+  check("El formulario propone el nombre del cliente", (await page.$eval(".order-form .field input", (i) => i.value)) === "Camila Rojas");
+  await fillOrder("", [["Sillas plegables", 6, 22.5]]);
+  await submitNewOrder();
+  const clientRows = await customers();
+  check("El cliente crea un pedido y sólo ve el suyo", clientRows.length === 1 && clientRows[0] === "Camila Rojas", clientRows.join(" | "));
+  check("El cliente no puede avanzar estados (sin botón →)", !(await page.$$eval("tbody button", (bs) => bs.some((b) => b.textContent.startsWith("→")))));
+  check("El cliente puede cancelar su pedido pendiente", await page.$$eval("tbody button", (bs) => bs.some((b) => b.textContent === "Cancelar pedido")));
+  await sleep(500);
+  await shot("10_vista_cliente.png");
+
+  // ------------------------------------------------------------------ vista móvil (cliente)
   await page.setViewport({ width: 390, height: 844, isMobile: true, deviceScaleFactor: 2 });
   await sleep(1500);
   await page.evaluate(() => {

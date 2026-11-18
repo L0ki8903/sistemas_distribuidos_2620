@@ -10,9 +10,12 @@ Mecanismos implementados:
    ``db_used = "replica_failover"`` en lugar de devolver HTTP 500.
 3. **Circuit breaker**: tras un fallo real de la primaria se evita durante
    ``breaker_cooldown_seconds`` para no pagar el timeout de conexión en cada petición.
-4. **Reconciliación anti-entropía**: compara ``(id, updated_at)`` en ambas bases y copia la versión
-   más reciente en la otra (incluye *tombstones* de borrado). Se ejecuta al recuperar la primaria,
-   periódicamente en segundo plano y bajo demanda (``POST /api/replication/sync``).
+4. **Reconciliación anti-entropía**: compara ``(id, updated_at)`` de cada tabla replicada
+   (``orders`` y ``users``) en ambas bases y copia la versión más reciente en la otra (incluye
+   *tombstones* de borrado). Se ejecuta al recuperar la primaria, periódicamente en segundo plano y
+   bajo demanda (``POST /api/replication/sync``).
+5. **Esquema autocurativo**: al arrancar (y cuando una base vuelve) se crean las tablas que falten y
+   se aplican migraciones aditivas, para bases creadas con versiones anteriores.
 """
 from __future__ import annotations
 
@@ -24,14 +27,14 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Callable, Iterator, TypeVar
 
-from sqlalchemy import create_engine, func, select, text
+from sqlalchemy import Table, create_engine, func, inspect, select, text
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.exc import DataError, IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
 from .chaos import ChaosState
 from .config import Settings
-from .models import Base, Order, utcnow
+from .models import REPLICATED_TABLES, SCHEMA_MIGRATIONS, Base, Order, User, utcnow
 
 logger = logging.getLogger("pedidos.db")
 
@@ -39,9 +42,11 @@ PRIMARY = "primary"
 REPLICA = "replica"
 DB_USED_PRIMARY = "primary"
 DB_USED_FAILOVER = "replica_failover"
+SCHEMA_LOCK_ID = 724_001  # pg_advisory_xact_lock: los dos nodos no migran a la vez
 
 T = TypeVar("T")
-orders_table = Order.__table__
+orders_table: Table = Order.__table__
+users_table: Table = User.__table__
 
 
 class SimulatedPrimaryDownError(Exception):
@@ -98,7 +103,7 @@ def build_engine(url: str, connect_timeout: int) -> Engine:
 def is_failover_error(exc: BaseException) -> bool:
     """¿El error indica que la base no está disponible (y conviene conmutar)?
 
-    Los errores de integridad/datos son errores del *pedido*, no de la infraestructura.
+    Los errores de integridad/datos son errores de la *petición*, no de la infraestructura.
     """
     if isinstance(exc, (SimulatedPrimaryDownError, PrimaryCircuitOpenError)):
         return True
@@ -107,11 +112,11 @@ def is_failover_error(exc: BaseException) -> bool:
     return isinstance(exc, SQLAlchemyError)
 
 
-def upsert_order_row(conn: Connection, row: dict[str, Any]) -> None:
+def upsert_row(conn: Connection, table: Table, row: dict[str, Any]) -> None:
     """INSERT ... ON CONFLICT (id) DO UPDATE ... WHERE destino.updated_at < origen.updated_at.
 
-    Es atómico e idempotente: aplicar la misma fila dos veces, o una versión más vieja, no
-    cambia nada (last-write-wins). Funciona en PostgreSQL y SQLite.
+    Atómico e idempotente: aplicar la misma fila dos veces, o una versión más vieja, no cambia nada
+    (last-write-wins). Funciona en PostgreSQL y SQLite.
     """
     if conn.dialect.name == "postgresql":
         from sqlalchemy.dialects.postgresql import insert
@@ -120,18 +125,37 @@ def upsert_order_row(conn: Connection, row: dict[str, Any]) -> None:
     else:  # pragma: no cover - sólo se soportan estos dos motores
         raise RuntimeError(f"Motor no soportado para replicación: {conn.dialect.name}")
 
-    stmt = insert(orders_table).values(**row)
+    stmt = insert(table).values(**row)
     stmt = stmt.on_conflict_do_update(
-        index_elements=[orders_table.c.id],
-        set_={column.name: stmt.excluded[column.name] for column in orders_table.columns if column.name != "id"},
-        where=orders_table.c.updated_at < stmt.excluded.updated_at,
+        index_elements=[table.c.id],
+        set_={column.name: stmt.excluded[column.name] for column in table.columns if column.name != "id"},
+        where=table.c.updated_at < stmt.excluded.updated_at,
     )
     conn.execute(stmt)
+
+
+def upsert_order_row(conn: Connection, row: dict[str, Any]) -> None:
+    upsert_row(conn, orders_table, row)
 
 
 def _chunks(values: list[str], size: int) -> Iterator[list[str]]:
     for start in range(0, len(values), size):
         yield values[start:start + size]
+
+
+def _apply_schema(conn: Connection) -> list[str]:
+    """Crea tablas/índices que falten y aplica migraciones aditivas. Devuelve lo que cambió."""
+    if conn.dialect.name == "postgresql":
+        conn.execute(text("SELECT pg_advisory_xact_lock(:id)"), {"id": SCHEMA_LOCK_ID})
+    Base.metadata.create_all(conn)
+    applied = []
+    inspector = inspect(conn)
+    for table, column, ddl in SCHEMA_MIGRATIONS:
+        if column not in {c["name"] for c in inspector.get_columns(table)}:
+            conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}"))
+            applied.append(f"{table}.{column}")
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_orders_owner_id ON orders (owner_id)"))
+    return applied
 
 
 class DatabaseCluster:
@@ -153,18 +177,34 @@ class DatabaseCluster:
         self._primary_open_until = 0.0
         self._next_resync_attempt = 0.0
         self._needs_resync = False
+        self._schema_ready = {PRIMARY: False, REPLICA: False}
         self.failover_count = 0
         self.last_primary_error: str | None = None
         self.last_sync: dict[str, Any] | None = None
 
-    # ------------------------------------------------------------------ ciclo de vida
+    # ------------------------------------------------------------------ ciclo de vida / esquema
     def ensure_schema(self) -> None:
-        """Crea la tabla si no existe (en Docker ya la crea ``database/init.sql``)."""
-        for name, engine in self.engines.items():
-            try:
-                Base.metadata.create_all(engine)
-            except SQLAlchemyError as exc:
-                logger.warning("SCHEMA no verificado en db-%s: %s", name, describe_error(exc))
+        for name in self.engines:
+            self._ensure_schema_for(name)
+
+    def _ensure_schema_for(self, name: str, quiet: bool = False) -> bool:
+        try:
+            with self.engines[name].begin() as conn:
+                applied = _apply_schema(conn)
+        except SQLAlchemyError as exc:
+            (logger.debug if quiet else logger.warning)(
+                "SCHEMA no verificado en db-%s: %s", name, describe_error(exc)
+            )
+            return False
+        if applied:
+            logger.info("SCHEMA migrado en db-%s: %s", name, ", ".join(applied))
+        self._schema_ready[name] = True
+        return True
+
+    def _ensure_pending_schemas(self) -> None:
+        for name, ready in self._schema_ready.items():
+            if not ready and not (name == PRIMARY and self.chaos.simulate_db_primary_down):
+                self._ensure_schema_for(name, quiet=True)
 
     def dispose(self) -> None:
         for engine in self.engines.values():
@@ -240,11 +280,15 @@ class DatabaseCluster:
             logger.error("db-replica tampoco disponible: %s", describe_error(exc))
             raise DatabaseUnavailableError("Ni db-primary ni db-replica están disponibles") from exc
 
-    def write(self, fn: Callable[[Session], tuple[dict[str, Any], Any]]) -> WriteResult:
+    def write(
+        self,
+        fn: Callable[[Session], tuple[dict[str, Any], Any]],
+        table: Table = orders_table,
+    ) -> WriteResult:
         """Escribe en la primaria y replica en la réplica; failover a la réplica si la primaria falla.
 
         ``fn`` recibe la sesión (ya dentro de una transacción) y devuelve ``(fila, info)``, donde
-        ``fila`` es el estado final completo del pedido afectado.
+        ``fila`` es el estado final completo del registro afectado de ``table``.
         """
         self._maybe_resync()
         try:
@@ -262,79 +306,113 @@ class DatabaseCluster:
                 raise DatabaseUnavailableError("Ni db-primary ni db-replica están disponibles") from exc_replica
             with self._state_lock:
                 self._needs_resync = True
-            logger.warning("WRITE order=%s en db-replica (failover); copia a db-primary PENDIENTE", row["id"])
+            logger.warning(
+                "WRITE %s=%s en db-replica (failover); copia a db-primary PENDIENTE", table.name, row["id"]
+            )
             return WriteResult(row=row, info=info, db_used=DB_USED_FAILOVER, replication="pending")
 
         self._record_primary_success()
-        replication = self._replicate(row, REPLICA)
+        replication = self._replicate(row, REPLICA, table)
         return WriteResult(row=row, info=info, db_used=DB_USED_PRIMARY, replication=replication)
 
-    def _replicate(self, row: dict[str, Any], target: str) -> str:
+    def _replicate(self, row: dict[str, Any], target: str, table: Table) -> str:
         """Replica una fila en ``target``. Nunca propaga el error: la escritura ya se confirmó."""
         try:
             self._guard(target)
             with self.engines[target].begin() as conn:
-                upsert_order_row(conn, row)
+                upsert_row(conn, table, row)
         except Exception as exc:  # noqa: BLE001
             with self._state_lock:
                 self._needs_resync = True
             logger.warning(
-                "REPLICATION order=%s -> db-%s FALLÓ (%s); pendiente de reconciliación",
-                row["id"], target, describe_error(exc),
+                "REPLICATION %s=%s -> db-%s FALLÓ (%s); pendiente de reconciliación",
+                table.name, row["id"], target, describe_error(exc),
             )
             return "pending"
-        logger.info("REPLICATION order=%s -> db-%s OK", row["id"], target)
+        logger.info("REPLICATION %s=%s -> db-%s OK", table.name, row["id"], target)
         return "synced"
 
     # ------------------------------------------------------------------ reconciliación
-    def _index(self, name: str) -> dict[str, datetime]:
+    def _index(self, name: str, table: Table) -> dict[str, datetime]:
         self._guard(name, respect_breaker=False)
         with self.engines[name].connect() as conn:
-            rows = conn.execute(select(orders_table.c.id, orders_table.c.updated_at))
+            rows = conn.execute(select(table.c.id, table.c.updated_at))
             return {row.id: row.updated_at for row in rows}
 
-    def _copy(self, source: str, target: str, ids: list[str]) -> int:
+    def _copy(self, source: str, target: str, table: Table, ids: list[str]) -> tuple[int, int]:
+        """Copia filas de ``source`` a ``target``. Devuelve ``(copiadas, conflictos)``.
+
+        Cada fila va en su propia transacción: un conflicto de unicidad (p. ej. el mismo
+        ``username`` creado en ambas bases durante una partición) no bloquea el resto.
+        """
         if not ids:
-            return 0
-        copied = 0
-        with self.engines[source].connect() as src, self.engines[target].begin() as dst:
+            return 0, 0
+        copied = conflicts = 0
+        with self.engines[source].connect() as src:
             for chunk in _chunks(ids, 200):
-                for row in src.execute(select(orders_table).where(orders_table.c.id.in_(chunk))).mappings():
-                    upsert_order_row(dst, dict(row))
-                    copied += 1
-        return copied
+                rows = [dict(r) for r in src.execute(select(table).where(table.c.id.in_(chunk))).mappings()]
+                for row in rows:
+                    try:
+                        with self.engines[target].begin() as dst:
+                            upsert_row(dst, table, row)
+                        copied += 1
+                    except IntegrityError as exc:
+                        conflicts += 1
+                        logger.error(
+                            "SYNC conflicto en %s id=%s -> db-%s: %s", table.name, row["id"], target, describe_error(exc)
+                        )
+        return copied, conflicts
 
     def reconcile(self, reason: str = "manual") -> dict[str, Any]:
-        """Sincroniza primaria y réplica (last-write-wins por ``updated_at``)."""
+        """Sincroniza primaria y réplica (last-write-wins por ``updated_at``) en todas las tablas."""
         started = time.perf_counter()
         if not self._sync_lock.acquire(timeout=15):
             return {"status": "busy", "reason": reason}
         stage = PRIMARY
         try:
-            primary_index = self._index(PRIMARY)
-            stage = REPLICA
-            replica_index = self._index(REPLICA)
-            to_primary = [i for i, ts in replica_index.items() if i not in primary_index or ts > primary_index[i]]
-            to_replica = [i for i, ts in primary_index.items() if i not in replica_index or ts > replica_index[i]]
-            stage = PRIMARY
-            copied_to_primary = self._copy(REPLICA, PRIMARY, to_primary)
-            stage = REPLICA
-            copied_to_replica = self._copy(PRIMARY, REPLICA, to_replica)
+            self._ensure_pending_schemas()
+            per_table: dict[str, dict[str, int]] = {}
+            for table in REPLICATED_TABLES:
+                stage = PRIMARY
+                primary_index = self._index(PRIMARY, table)
+                stage = REPLICA
+                replica_index = self._index(REPLICA, table)
+                to_primary = [i for i, ts in replica_index.items() if i not in primary_index or ts > primary_index[i]]
+                to_replica = [i for i, ts in primary_index.items() if i not in replica_index or ts > replica_index[i]]
+                stage = PRIMARY
+                copied_p, conflicts_p = self._copy(REPLICA, PRIMARY, table, to_primary)
+                stage = REPLICA
+                copied_r, conflicts_r = self._copy(PRIMARY, REPLICA, table, to_replica)
+                per_table[table.name] = {
+                    "copied_to_primary": copied_p,
+                    "copied_to_replica": copied_r,
+                    "conflicts": conflicts_p + conflicts_r,
+                    "rows_primary": len(primary_index.keys() | set(to_primary)),
+                    "rows_replica": len(replica_index.keys() | set(to_replica)),
+                }
             with self._state_lock:
                 self._needs_resync = False
                 self._primary_open_until = 0.0
+            orders = per_table["orders"]
             result: dict[str, Any] = {
                 "status": "ok",
                 "reason": reason,
-                "copied_to_primary": copied_to_primary,
-                "copied_to_replica": copied_to_replica,
-                "rows_primary": len(primary_index.keys() | set(to_primary)),
-                "rows_replica": len(replica_index.keys() | set(to_replica)),
+                "copied_to_primary": sum(t["copied_to_primary"] for t in per_table.values()),
+                "copied_to_replica": sum(t["copied_to_replica"] for t in per_table.values()),
+                "conflicts": sum(t["conflicts"] for t in per_table.values()),
+                "rows_primary": orders["rows_primary"],
+                "rows_replica": orders["rows_replica"],
+                "tables": per_table,
             }
-            if copied_to_primary or copied_to_replica:
+            if result["copied_to_primary"] or result["copied_to_replica"]:
+                detail = ", ".join(
+                    f"{name}: {t['copied_to_primary']}→primaria/{t['copied_to_replica']}→réplica"
+                    for name, t in per_table.items()
+                    if t["copied_to_primary"] or t["copied_to_replica"]
+                )
                 logger.info(
-                    "SYNC (%s): %d fila(s) réplica->primaria, %d fila(s) primaria->réplica",
-                    reason, copied_to_primary, copied_to_replica,
+                    "SYNC (%s): %d fila(s) réplica->primaria, %d fila(s) primaria->réplica [%s]",
+                    reason, result["copied_to_primary"], result["copied_to_replica"], detail,
                 )
         except SimulatedPrimaryDownError as exc:
             result = {"status": "skipped", "reason": reason, "detail": str(exc)}
@@ -384,9 +462,9 @@ class DatabaseCluster:
         }
 
     def replication_status(self) -> dict[str, Any]:
-        """Compara ambas bases: filas, pedidos activos y divergencias."""
+        """Compara ambas bases: filas por tabla, pedidos activos, usuarios y divergencias."""
         databases: dict[str, Any] = {}
-        indexes: dict[str, dict[str, datetime]] = {}
+        indexes: dict[str, dict[str, dict[str, datetime]]] = {}
         for name in (PRIMARY, REPLICA):
             try:
                 self._guard(name, respect_breaker=False)
@@ -394,25 +472,37 @@ class DatabaseCluster:
                     active = conn.execute(
                         select(func.count()).select_from(orders_table).where(orders_table.c.deleted_at.is_(None))
                     ).scalar_one()
-                    index = {
-                        row.id: row.updated_at
-                        for row in conn.execute(select(orders_table.c.id, orders_table.c.updated_at))
+                    per_table = {
+                        table.name: {
+                            row.id: row.updated_at for row in conn.execute(select(table.c.id, table.c.updated_at))
+                        }
+                        for table in REPLICATED_TABLES
                     }
-                indexes[name] = index
-                databases[name] = {"status": "up", "rows": len(index), "active_orders": active}
+                indexes[name] = per_table
+                databases[name] = {
+                    "status": "up",
+                    "rows": len(per_table["orders"]),
+                    "active_orders": active,
+                    "users": len(per_table["users"]),
+                }
             except SimulatedPrimaryDownError as exc:
                 databases[name] = {"status": "simulated_down", "detail": str(exc)}
             except SQLAlchemyError as exc:
                 databases[name] = {"status": "down", "detail": describe_error(exc)}
 
         divergent: int | None = None
+        divergent_by_table: dict[str, int] | None = None
         if len(indexes) == 2:
-            primary_index, replica_index = indexes[PRIMARY], indexes[REPLICA]
-            ids = set(primary_index) | set(replica_index)
-            divergent = sum(1 for i in ids if primary_index.get(i) != replica_index.get(i))
+            divergent_by_table = {}
+            for table in REPLICATED_TABLES:
+                primary_index, replica_index = indexes[PRIMARY][table.name], indexes[REPLICA][table.name]
+                ids = set(primary_index) | set(replica_index)
+                divergent_by_table[table.name] = sum(1 for i in ids if primary_index.get(i) != replica_index.get(i))
+            divergent = divergent_by_table["orders"]
         return {
-            "in_sync": divergent == 0,
+            "in_sync": divergent_by_table is not None and sum(divergent_by_table.values()) == 0,
             "divergent_orders": divergent,
+            "divergent_by_table": divergent_by_table,
             "primary": databases[PRIMARY],
             "replica": databases[REPLICA],
             "needs_resync": self._needs_resync,

@@ -1,4 +1,4 @@
-"""Salud del nodo y estado de la replicación."""
+"""Salud del nodo (pública) y estado de la replicación (sólo administradores)."""
 from __future__ import annotations
 
 import time
@@ -9,7 +9,7 @@ from .. import __version__
 from ..chaos import ChaosState
 from ..config import Settings
 from ..database import DatabaseCluster
-from ..deps import get_chaos, get_cluster, get_settings
+from ..deps import get_chaos, get_cluster, get_settings, require_admin
 
 router = APIRouter(tags=["Sistema"])
 STARTED_AT = time.time()
@@ -35,11 +35,13 @@ def health(
     return body
 
 
-@router.get("/api/replication/status", summary="Comparación db-primary vs db-replica")
+@router.get("/api/replication/status", summary="Comparación db-primary vs db-replica",
+            dependencies=[Depends(require_admin)])
 def replication_status(cluster: DatabaseCluster = Depends(get_cluster)):
     return cluster.replication_status()
 
 
-@router.post("/api/replication/sync", summary="Forzar reconciliación primaria <-> réplica")
+@router.post("/api/replication/sync", summary="Forzar reconciliación primaria <-> réplica",
+             dependencies=[Depends(require_admin)])
 def replication_sync(cluster: DatabaseCluster = Depends(get_cluster)):
     return cluster.reconcile(reason="manual")
